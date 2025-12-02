@@ -1,24 +1,32 @@
-// src/components/Layout.tsx
-import React from 'react';
-import Sidebar from './Sidebar';
-import Header from './Header';
+import { useState } from "react";
+import Sidebar from "./Sidebar";
+import Header from "./Header";
+import ProjectSidebar from "../components/ProjectSidebar";
+import { Outlet } from "react-router-dom";
 
-interface LayoutProps {
-  children: React.ReactNode;  // ReactNode 대신 React.ReactNode
-}
+export default function Layout() {
+  const [openProjects, setOpenProjects] = useState(false);
 
-const Layout = ({ children }: LayoutProps) => {
   return (
-    <div className="h-screen flex bg-gray-50">
-      <Sidebar />
-      <div className="flex-1 flex flex-col ml-16">
+    <div className="flex">
+      <Sidebar onOpenProjects={() => setOpenProjects(true)} />
+
+      {/* Project List Sidebar */}
+      {openProjects && (
+        <ProjectSidebar
+          open={openProjects}
+          onClose={() => setOpenProjects(false)}
+        />
+      )}
+
+      <div className="flex-1 pl-[60px]">
+        {" "}
+        {/* 사이드바 너비만큼 패딩 추가 */}
         <Header />
-        <main className="flex-1 overflow-auto pt-16">
-          {children}
+        <main className="mt-16 p-8">
+          <Outlet />
         </main>
       </div>
     </div>
   );
-};
-
-export default Layout;
+}
