@@ -1,0 +1,135 @@
+# app/routers/inputs.py
+from fastapi import APIRouter, UploadFile, Query, File, Form, HTTPException, Depends
+from typing import List
+from datetime import datetime, timedelta
+import uuid, json
+
+from app.services.supabase_service import supabase, upload_bytes
+
+router = APIRouter(prefix="/inputs", tags=["inputs"])
+
+# 프로젝트별 input 목록 조회
+@router.get("/list")
+def get_inputs(project_id: int = Query(...)):
+    try:
+        res = supabase.table("input_contents") \
+            .select("id, title, created_at") \
+            .eq("project_id", project_id) \
+            .order("created_at", desc=False) \
+            .execute()
+        return {"inputs": res.data or []}
+
+    except Exception as e:
+        print("Error:", e)
+        raise HTTPException(status_code=500, detail="input 목록 조회 실패")
+
+# 업로드
+# 업로드된 파일 + 링크를 input_contents에 저장
+@router.post("/upload")
+async def submit_inputs(
+    user_id: str = Form(...), # uuid
+    project_id: int = Form(...),
+    host1: str = Form(...),
+    host2: str = Form(...),
+    style: str = Form(...),
+    links: str = Form("[]"),        # JSON string
+    files: List[UploadFile] = File(None)
+):
+    """
+    프론트에서 보낸 files[] + links[] + options 를 input_contents에 저장한다.
+    파일은 supabase storage에 저장.
+    링크는 input_contents에 URL 정보만 저장.
+    호스트/스타일 옵션은 output 생성 요청할 때 사용되므로 input 단계에 options로 저장해 둠.
+    """
+
+    expires_at = datetime.utcnow() + timedelta(days=30)
+
+    saved_inputs = []
+
+    # ----------------------------
+    # 1) 링크 저장 (input_contents)
+    # ----------------------------
+    link_list = json.loads(links) if links else []
+
+    for url in link_list:
+        res = supabase.table("input_contents").insert({
+            "user_id": user_id,
+            "project_id": project_id,
+            "title": url,
+            "is_link": True,
+            "link_url": url,
+            "options": { "host1": host1, "host2": host2, "style": style },
+            "expires_at": expires_at.isoformat() # 직렬화 문제로 문자열로 저장
+        }).execute()
+
+        saved_inputs.append(res.data[0])
+
+    # ----------------------------
+    # 2) 파일 저장 (supabase storage + input_contents)
+    # ----------------------------
+    if files:
+        for file in files:
+            # 파일 읽기
+            content = await file.read()
+
+            ext = file.filename.split(".")[-1] if "." in file.filename else "bin"
+            file_id = f"{uuid.uuid4()}.{ext}"
+
+            folder = f"user/{user_id}/project/{project_id}/inputs"
+            storage_path = upload_bytes(
+                            file_bytes=content,
+                            folder=folder,
+                            filename=file_id,
+                            content_type=file.content_type
+                        )
+
+            res = supabase.table("input_contents").insert({
+                "user_id": user_id,
+                "project_id": project_id,
+                "title": file.filename,
+                "is_link": False,
+                "storage_path": storage_path,
+                "file_type": file.content_type,
+                "file_size": len(content),
+                "options": { "host1": host1, "host2": host2, "style": style },
+                "expires_at": expires_at.isoformat()
+            }).execute()
+
+            saved_inputs.append(res.data[0])
+
+    return {
+        "status": "ok",
+        "inputs": saved_inputs
+    }
+
+# 입력 소스 삭제
+@router.delete("/{input_id}")
+def delete_input(input_id: int):
+    try:
+        # 1) 존재 여부 확인
+        check = supabase.table("input_contents") \
+            .select("id, is_link, storage_path") \
+            .eq("id", input_id) \
+            .single() \
+            .execute()
+
+        if not check.data:
+            raise HTTPException(status_code=404, detail="입력 소스를 찾을 수 없습니다.")
+
+        # 2) DB 삭제
+        res = supabase.table("input_contents") \
+            .delete() \
+            .eq("id", input_id) \
+            .execute()
+
+        # 3) 파일 타입일 경우 Storage 삭제
+        if not check.data["is_link"]:
+            storage_path = check.data.get("storage_path")
+            if storage_path:
+                supabase.storage.from_("inputs").remove([storage_path])
+
+        return {"message": "삭제 완료", "deleted_id": input_id}
+
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="입력 소스 삭제 실패")
