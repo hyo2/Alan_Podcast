@@ -45,14 +45,68 @@ const ProjectDetailPage = () => {
     }
   }, [outputs]);
 
+  // -------------------------------
+  // ✅ NEW: "processing" output polling
+  // -------------------------------
+  useEffect(() => {
+    const processing = outputs.filter((o) => o.status === "processing");
+    if (processing.length === 0) return;
+
+    const interval = setInterval(async () => {
+      for (const item of processing) {
+        try {
+          const res = await fetch(`${API_BASE_URL}/outputs/${item.id}/status`);
+          const data = await res.json();
+
+          // completed → UI 업데이트
+          if (data.status === "completed") {
+            setOutputs((prev) =>
+              prev.map((o) =>
+                o.id === item.id
+                  ? {
+                      ...o,
+                      status: "completed",
+                      created_at: new Date().toISOString(),
+                    }
+                  : o
+              )
+            );
+          }
+
+          // failed → alert + 목록에서 제거
+          if (data.status === "failed") {
+            alert(`"${item.title}" 생성 실패: ${data.error_message || ""}`);
+
+            setOutputs((prev) => prev.filter((o) => o.id !== item.id));
+          }
+        } catch (err) {
+          console.error("status polling error:", err);
+        }
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [outputs]);
+
   // 모달에서 생성 완료되면 새로운 output 추가
   const handleGenerated = (newOutput: OutputContent) => {
     setOutputs((prev) => [newOutput, ...prev]);
   };
 
   // 모달에서 소스 삭제 시 input 목록에서 제거
+  // input 삭제 처리 해야함
   const handleDeleteSource = (deletedId: number) => {
     setInputs((prev) => prev.filter((src) => src.id !== deletedId));
+  };
+
+  // output 삭제 처리
+  const handleDeleteOutput = async (id: number) => {
+    // 백엔드 API 연결 예정
+    // 일단 로컬 상태에서 삭제만 수행
+    setOutputs((prev) => prev.filter((o) => o.id !== id));
+
+    // TODO: 실제 백엔드 삭제 API 연결 후 여기에 추가
+    // await supabase.from("output_contents").delete().eq("id", id);
   };
 
   return (
@@ -63,7 +117,7 @@ const ProjectDetailPage = () => {
         existingSources={inputs}
         projectId={projectId!}
         onGenerated={handleGenerated}
-        onDelete={handleDeleteSource} // ★ 추가!
+        onDelete={handleDeleteSource}
       />
 
       <div className="flex w-full h-full bg-gray-50">
@@ -77,8 +131,7 @@ const ProjectDetailPage = () => {
         </div>
 
         {/* RIGHT: 생성된 output 목록 패널 */}
-        <div className="w-[340px] bg-white border-l shadow-lg p-4 overflow-y-auto">
-          {/* 소스 선택 버튼 */}
+        <div className="w-[340px] bg-white border-l shadow-lg p-4 flex flex-col">
           <div className="flex justify-end mb-4">
             <button
               onClick={() => setIsSourceModalOpen(true)}
@@ -88,10 +141,14 @@ const ProjectDetailPage = () => {
             </button>
           </div>
 
-          <GeneratePanel
-            outputs={outputs}
-            onSelectOutput={(id) => setSelectedOutputId(id)}
-          />
+          <div className="flex-1 overflow-y-auto">
+            <GeneratePanel
+              outputs={outputs}
+              selectedOutputId={selectedOutputId}
+              onSelectOutput={(id) => setSelectedOutputId(id)}
+              onDelete={handleDeleteOutput}
+            />
+          </div>
 
           <div className="mt-6">
             <ResourceBar />

@@ -77,7 +77,7 @@ export default function PodcastContents({ outputId }: { outputId: number }) {
   const { output, images } = data;
 
   return (
-    <div className="bg-white shadow rounded-lg p-6 h-[550px] flex flex-col">
+    <div className="bg-white shadow rounded-lg p-6 h-[800px] flex flex-col">
       {/* TOP FIXED AREA */}
       <div className="mb-4">
         <h1 className="text-xl font-bold">{output.title}</h1>

@@ -1,8 +1,15 @@
 import { Dialog, Transition } from "@headlessui/react";
-import { Fragment, useState, useRef } from "react";
+import { Fragment, useState, useRef, useEffect } from "react";
 import { Upload } from "lucide-react";
 import type { ExistingSource, OutputContent } from "../types.ts";
 import { API_BASE_URL } from "../lib/api";
+
+const PODCAST_STYLES = [
+  { id: "explain", label: "설명형" },
+  { id: "debate", label: "토론형" },
+  { id: "interview", label: "인터뷰" },
+  { id: "summary", label: "요약 중심" },
+];
 
 interface Props {
   isOpen: boolean;
@@ -21,39 +28,69 @@ export default function SourceModal({
   onGenerated,
   onDelete,
 }: Props) {
+  const userId = localStorage.getItem("user_id") || "";
+
+  // 선택된 기존 input들
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
+
+  // 새로 업로드할 자료들
   const [links, setLinks] = useState<string[]>([]);
+  const [files, setFiles] = useState<File[]>([]);
+
+  // 옵션들
   const [host1, setHost1] = useState("");
   const [host2, setHost2] = useState("");
   const [style, setStyle] = useState("");
-  const [title, setTitle] = useState("새 팟캐스트"); // placeholder로 수정하기
+
+  // 새로 생성할 output 제목
+  const [title, setTitle] = useState("");
+
+  // 에러 메시지
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const [hostList, setHostList] = useState<{ name: string }[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [files, setFiles] = useState<File[]>([]);
 
-  const userId = localStorage.getItem("user_id") || "";
+  // host 목록 불러오기
+  useEffect(() => {
+    const fetchVoices = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/voices`);
+        const data = await res.json();
+        setHostList(data.voices);
+      } catch (err) {
+        console.error("목소리 불러오기 실패:", err);
+      }
+    };
 
+    fetchVoices();
+  }, []);
+
+  // 체크박스 토글
   const toggleSelect = (id: number) => {
     setSelectedIds((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
     );
   };
 
-  const addLinkField = () => setLinks((prev) => [...prev, ""]);
-  const updateLink = (i: number, value: string) => {
-    setLinks((prev) => prev.map((v, idx) => (idx === i ? value : v)));
-  };
-  const removeLink = (i: number) => {
-    setLinks((prev) => prev.filter((_, idx) => idx !== i));
-  };
-
+  // 파일 선택
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
     setFiles([...files, ...Array.from(e.target.files)]);
   };
 
-  // 기존 소스 삭제 처리
+  // 링크 추가/수정/삭제
+  const addLinkField = () => setLinks([...links, ""]);
+  const updateLink = (i: number, value: string) => {
+    setLinks((prev) => prev.map((v, idx) => (i === idx ? value : v)));
+  };
+  const removeLink = (i: number) => {
+    setLinks((prev) => prev.filter((_, idx) => idx !== i));
+  };
+
+  // 기존 input 삭제
   const handleDeleteExistingSource = async (sourceId: number) => {
     if (!window.confirm("정말 삭제하시겠습니까?")) return;
 
@@ -67,81 +104,117 @@ export default function SourceModal({
         return;
       }
 
-      // 부모(ProjectDetailPage)의 상태도 업데이트
       onDelete(sourceId);
-
-      // 선택 중이었다면 체크박스에서도 제거
       setSelectedIds((prev) => prev.filter((id) => id !== sourceId));
     } catch (err) {
       console.error("삭제 실패:", err);
     }
   };
 
-  // 팟캐스트 생성 처리
+  // 팟캐스트 생성
   const handleGenerate = async () => {
+    setErrorMsg("");
+
+    // 유효성 체크
     if (!userId) {
-      alert("로그인이 필요합니다.");
+      setErrorMsg("로그인이 필요합니다.");
       return;
     }
+
     if (!host1 || !host2) {
-      alert("호스트를 선택해주세요.");
+      setErrorMsg("호스트를 선택해주세요.");
       return;
     }
+
+    if (!style) {
+      setErrorMsg("스타일을 선택해주세요.");
+      return;
+    }
+
+    if (!title.trim()) {
+      setErrorMsg("출력 파일명을 입력해주세요.");
+      return;
+    }
+
+    if (selectedIds.length === 0 && files.length === 0 && links.length === 0) {
+      setErrorMsg("기존 소스 선택 또는 새 파일/링크를 입력해야 합니다.");
+      return;
+    }
+
     setIsLoading(true);
 
     try {
-      const formData = new FormData();
-      formData.append("user_id", userId);
-      formData.append("input_ids", JSON.stringify(selectedIds));
-      formData.append(
-        "links",
-        JSON.stringify(links.filter((l) => l.trim() !== ""))
-      );
-      formData.append("host1", host1);
-      formData.append("host2", host2);
-      formData.append("style", style);
-      formData.append("title", title);
+      // 새로 추가되는 파일/링크는 upload API로 저장 후 input_contents rows 반환
+      let newInputIds: number[] = [];
 
-      files.forEach((f) => formData.append("files", f));
+      if (files.length > 0 || links.length > 0) {
+        const formData = new FormData();
+        formData.append("user_id", userId);
+        formData.append("project_id", projectId);
+        formData.append("host1", host1);
+        formData.append("host2", host2);
+        formData.append("style", style);
+        formData.append(
+          "links",
+          JSON.stringify(links.filter((l) => l.trim() !== ""))
+        );
 
-      const res = await fetch(
-        `${API_BASE_URL}/outputs/generate?project_id=${projectId}`,
-        {
+        files.forEach((f) => formData.append("files", f));
+
+        const uploadRes = await fetch(`${API_BASE_URL}/inputs/upload`, {
           method: "POST",
           body: formData,
-        }
-      );
+        });
 
-      if (!res.ok) {
-        console.error(await res.text());
-        alert("팟캐스트 생성 실패");
+        if (!uploadRes.ok) {
+          setErrorMsg("새 입력 자료 업로드 실패");
+          setIsLoading(false);
+          return;
+        }
+
+        const uploadJson = await uploadRes.json();
+        newInputIds = uploadJson.inputs.map((i: any) => i.id);
+      }
+
+      const finalInputIds = [...selectedIds, ...newInputIds];
+
+      // 2) generate API 호출 (프로젝트는 이미 존재함)
+      const generateForm = new FormData();
+      generateForm.append("project_id", String(projectId));
+      generateForm.append("input_content_ids", JSON.stringify(finalInputIds));
+      generateForm.append("host1", host1);
+      generateForm.append("host2", host2);
+      generateForm.append("style", style);
+      generateForm.append("title", title);
+
+      const genRes = await fetch(`${API_BASE_URL}/outputs/generate`, {
+        method: "POST",
+        body: generateForm,
+      });
+
+      if (!genRes.ok) {
+        setErrorMsg("팟캐스트 생성 실패");
+        setIsLoading(false);
         return;
       }
 
-      const data = await res.json();
-      onGenerated(data.output);
+      const { output_id } = await genRes.json();
+
+      // output_id만 반환해서 부모 페이지에서 polling하도록 함
+      onGenerated({
+        id: output_id,
+        title,
+        status: "processing",
+      } as any);
+
       onClose();
     } catch (err) {
-      console.error(err);
-      alert("오류가 발생했습니다.");
+      console.error("generate error:", err);
+      setErrorMsg("오류가 발생했습니다.");
     } finally {
       setIsLoading(false);
     }
   };
-
-  const hostList = [
-    { id: "alan_male", name: "James" },
-    { id: "alan_female", name: "Jenny" },
-    { id: "calm_male", name: "차분한 남성" },
-    { id: "energetic_female", name: "발랄한 여성" },
-  ];
-
-  const PODCAST_STYLES = [
-    { id: "explain", label: "설명형" },
-    { id: "debate", label: "토론형" },
-    { id: "interview", label: "인터뷰" },
-    { id: "summary", label: "요약 중심" },
-  ];
 
   return (
     <Transition show={isOpen} appear as={Fragment}>
@@ -306,7 +379,7 @@ export default function SourceModal({
                     >
                       <option value="">선택하세요</option>
                       {hostList.map((h) => (
-                        <option key={h.id} value={h.id}>
+                        <option key={h.name} value={h.name}>
                           {h.name}
                         </option>
                       ))}
@@ -321,7 +394,7 @@ export default function SourceModal({
                     >
                       <option value="">선택하세요</option>
                       {hostList.map((h) => (
-                        <option key={h.id} value={h.id}>
+                        <option key={h.name} value={h.name}>
                           {h.name}
                         </option>
                       ))}

@@ -11,4 +11,5 @@ export interface OutputContent {
   script_url: string;
   created_at?: string;
   summary: string;
+  status: "processing" | "completed" | "failed";
 }

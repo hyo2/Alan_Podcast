@@ -111,7 +111,7 @@ const AuthPage = () => {
             {mode === "signup" && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  이름 (선택)
+                  이름
                 </label>
                 <input
                   type="text"
