@@ -1,4 +1,4 @@
-# app/routers/inputs.py
+# app/routers/input.py
 from fastapi import APIRouter, UploadFile, Query, File, Form, HTTPException, Depends
 from typing import List
 from datetime import datetime, timedelta
@@ -46,9 +46,7 @@ async def submit_inputs(
 
     saved_inputs = []
 
-    # ----------------------------
     # 1) 링크 저장 (input_contents)
-    # ----------------------------
     link_list = json.loads(links) if links else []
 
     for url in link_list:
@@ -64,9 +62,7 @@ async def submit_inputs(
 
         saved_inputs.append(res.data[0])
 
-    # ----------------------------
     # 2) 파일 저장 (supabase storage + input_contents)
-    # ----------------------------
     if files:
         for file in files:
             # 파일 읽기

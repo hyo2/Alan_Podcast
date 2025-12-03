@@ -29,7 +29,7 @@ def create_project(payload: dict):
     project_count = len(count_res.data)
 
     # 자동 이름 생성 - 지금 이거 안 됨
-    title = payload.get("title", f"프로젝트 {project_count + 1}")
+    title = payload.get("title")
     description = payload.get("description", "")
 
     res = supabase.table("projects").insert({
@@ -41,36 +41,74 @@ def create_project(payload: dict):
     return {"project": res.data[0]}
 
 
-# 프로젝트 폴더 및 파일 삭제
+# 프로젝트 전체 삭제 - 폴더, 파일 포함
 @router.delete("/projects/{project_id}")
 def delete_project(project_id: int, user_id: str):
     """
-    1. project 삭제
-    2. input_contents / output_contents 삭제
-    3. Supabase Storage 파일 삭제
+    프로젝트 전체 삭제:
+    1. 프로젝트 소유자 확인
+    2. output_images 삭제
+    3. output_contents 삭제
+    4. input_contents 삭제
+    5. projects 삭제
+    6. Supabase Storage의 프로젝트 폴더 삭제
     """
 
-    # 0) 프로젝트 존재 확인
-    proj = supabase.table("projects") \
-        .select("*") \
-        .eq("id", project_id) \
-        .eq("user_id", user_id) \
+    # 프로젝트 존재 여부, 소유자 확인
+    proj = (
+        supabase.table("projects")
+        .select("*")
+        .eq("id", project_id)
+        .eq("user_id", user_id)
         .execute()
+    )
 
     if not proj.data:
         raise HTTPException(404, "Project not found")
 
-    # 1) input_contents, output_contents 삭제
-    supabase.table("input_contents").delete().eq("project_id", project_id).execute()
-    supabase.table("output_contents").delete().eq("project_id", project_id).execute()
+    # project의 모든 output_id 조회
+    outputs = (
+        supabase.table("output_contents")
+        .select("id")
+        .eq("project_id", project_id)
+        .execute()
+    )
 
-    # 2) projects 테이블에서 삭제
-    supabase.table("projects").delete().eq("id", project_id).execute()
+    output_ids = [row["id"] for row in outputs.data] if outputs.data else []
 
-    # 3) Supabase Storage 파일 삭제
+    # output_images 삭제
+    if output_ids:
+        supabase.table("output_images") \
+            .delete() \
+            .in_("output_id", output_ids) \
+            .execute()
+
+    # output_contents 삭제
+    supabase.table("output_contents") \
+        .delete() \
+        .eq("project_id", project_id) \
+        .execute()
+
+    # input_contents 삭제
+    supabase.table("input_contents") \
+        .delete() \
+        .eq("project_id", project_id) \
+        .execute()
+
+    # projects 삭제
+    supabase.table("projects") \
+        .delete() \
+        .eq("id", project_id) \
+        .execute()
+
+    # Supabase Storage에서 파일 삭제
     delete_project_folder(user_id, project_id)
 
-    return {"message": "project deleted", "project_id": project_id}
+    return {
+        "message": "project deleted completely",
+        "project_id": project_id,
+        "deleted_outputs": output_ids,
+    }
 
 
 

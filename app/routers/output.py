@@ -1,12 +1,8 @@
-# backend/app/routers/outputs.py
-from fastapi import APIRouter, Form, File, UploadFile, HTTPException
-from datetime import datetime, timedelta
-from uuid import uuid4
+# backend/app/routers/output.py
+from fastapi import APIRouter, Form, BackgroundTasks, HTTPException
 import json
-import uuid, base64
-from typing import Any, Dict, List
 
-from app.services.supabase_service import supabase, upload_bytes
+from app.services.supabase_service import supabase
 from app.services.langgraph_service import run_langgraph  # optional
 
 router = APIRouter(prefix="/outputs", tags=["outputs"])
@@ -52,66 +48,131 @@ def get_output_detail(output_id: int):
         "images": images_res.data
     }
 
-# output 생성 - LangGraph 호출
+# output 상태 조회 - 프론트에서 polling 용도
+@router.get("/{output_id}/status")
+def get_output_status(output_id: int):
+    res = supabase.table("output_contents") \
+        .select("status") \
+        .eq("id", output_id) \
+        .single() \
+        .execute()
+
+    if res.data is None:
+        raise HTTPException(status_code=404, detail="Output not found")
+
+    return res.data
+
+# generate: Output 생성 요청 -> output_contents row 생성 + 비동기 LangGraph 실행
 @router.post("/generate")
 async def generate_output(
-    project_id: int,
-    user_id: str = Form(...),
-    title: str = Form("새 에피소드"),
+    background_tasks: BackgroundTasks,
+    project_id: int = Form(...),
+    title: str = Form("새 팟캐스트"),
     input_content_ids: str = Form("[]"),
     host1: str = Form(""),
     host2: str = Form(""),
-    style: str = Form("default")
+    style: str = Form("default"),
 ):
     try:
+        # title이 빈 문자열("")일 때 기본값 설정
+        title = (title or "새 팟캐스트").strip()
+
         input_ids = json.loads(input_content_ids)
 
-        # LangGraph 호출 (스크립트 + 오디오 + 이미지 + 요약문 생성)
-        result = await run_langgraph(
+        # output_contents row 생성
+        out_res = supabase.table("output_contents").insert({
+            "project_id": project_id,
+            "title": title,
+            "input_content_ids": input_ids,
+            "options": {
+                "host1": host1,
+                "host2": host2,
+                "style": style
+            },
+            "status": "processing", # default status : processing(생성 중)
+        }).execute()
+
+        output_id = out_res.data[0]["id"]
+
+        # Background로 LangGraph 실행
+        background_tasks.add_task(
+            process_langgraph_output,
+            output_id=output_id,
             input_ids=input_ids,
             host1=host1,
             host2=host2,
             style=style,
         )
 
-        script_text = result["script"]
-        audio_url = result["audio_url"]
-        images = result.get("images", [])  # [{image_path, img_description, img_index} ...]
-
-
-        # output_contents 저장
-        out_res = supabase.table("output_contents").insert({
-            "project_id": project_id,
-            "user_id": user_id,
-            "title": title,
-            "input_content_ids": input_ids,
-            "script_text": script_text,
-            "storage_path": audio_url,
-            "options": {
-                "host1": host1,
-                "host2": host2,
-                "style": style
-            },
-            "metadata": {
-                "image_count": len(images)
-            }
-        }).execute()
-
-        output_id = out_res.data[0]["id"]
-
-        # 이미지가 있다면 output_images 에 저장
-        if len(images) > 0:
-            for img in images:
-                supabase.table("output_images").insert({
-                    "output_id": output_id,
-                    "image_path": img["path"],
-                    "img_description": img.get("img_description", ""),
-                    "img_index": img.get("img_index", 0),
-                }).execute()
-
-        return {"output": out_res.data[0]}
+        return {
+            "output_id": output_id,
+            "status": "processing"
+        }
 
     except Exception as e:
         print(e)
-        raise HTTPException(status_code=500, detail="팟캐스트 생성 실패")
-    
+        raise HTTPException(status_code=500, detail="출력 생성 요청 실패")
+
+# 백그라운드에서 LangGraph 실행 → output_contents 업데이트
+async def process_langgraph_output(output_id, input_ids, host1, host2, style):
+    try:
+
+        # input_ids기반으로  실제 Storage URL 또는 link_url 조회
+        rows = (
+            supabase.table("input_contents")
+            .select("id, is_link, storage_path, link_url")
+            .in_("id", input_ids)
+            .execute()
+        )
+
+        if not rows.data:
+            raise Exception("input_contents 조회 실패")
+
+        source_urls = []
+        for item in rows.data:
+            if item["is_link"]:
+                source_urls.append(item["link_url"])
+            else:
+                source_urls.append(item["storage_path"])
+
+        # 테스트 출력
+        print("==== LangGraph 호출 예정 데이터 ====")
+        print("output_id:", output_id)
+        print("source_urls:", source_urls)
+        print("host1:", host1)
+        print("host2:", host2)
+        print("style:", style)
+
+        # LangGraph 실행
+        # result = await run_langgraph(
+        #     output_id=output_id,
+        #     source_urls=source_urls,
+        #     host1=host1,
+        #     host2=host2,
+        #     style=style
+        # )
+
+        # 성공 시 output_contents 업데이트 
+        # => langgraph에서 db에 다 저장하도록 하고 
+        # return으로 성공/실패만 주면 status만 저장하도록 변경
+        # supabase.table("output_contents").update({
+        #     "status": "completed",
+        #     "script_text": result.get("script"),
+        #     "summary": result.get("summary"),
+        #     "storage_path": result.get("audio_url"),
+        #     "metadata": {
+        #         "image_count": len(result.get("images", []))
+        #     }
+        # }).eq("id", output_id).execute()
+
+        # 임시 -> 바로 성공(완료) 처리
+        supabase.table("output_contents").update({
+            "status": "completed",
+        }).eq("id", output_id).execute()
+        
+    except Exception as e:
+        print("[LangGraph Error]", e)
+        supabase.table("output_contents").update({
+            "status": "failed",
+            "error_message": str(e)
+        }).eq("id", output_id).execute()
