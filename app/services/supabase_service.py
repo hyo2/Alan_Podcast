@@ -34,7 +34,8 @@ def upload_bytes(file_bytes, folder, filename, content_type=None):
         return None
 
     # public URL 반환
-    return supabase.storage.from_(BUCKET).get_public_url(path)
+    # return supabase.storage.from_(BUCKET).get_public_url(path)
+    return path 
 
 def create_signed_url(path: str, expires_in: int = 3600) -> str:
     signed = supabase.storage.from_(BUCKET).create_signed_url(path, expires_in)
@@ -58,4 +59,29 @@ def delete_project_folder(user_id: str, project_id: int):
 
     if file_paths:
         bucket.remove(file_paths)
+
+
+# 헬퍼 함수 - Supabase 응답 정규화
+def normalize_supabase_response(res):
+    """
+    Supabase Python SDK 응답을 항상 { "data": [...] } 형태로 정규화한다.
+    """
+    if isinstance(res, dict):
+        # 이미 dict라면 data가 없을 수도 있음
+        data = res.get("data")
+        if data is None:
+            # 단일 row가 dict로 온 경우 강제로 리스트로 감싸기
+            return { "data": [res] }
+        return { "data": data }
+
+    # SDK Response 객체인 경우
+    if hasattr(res, "data"):
+        data = res.data
+        if isinstance(data, dict):
+            return { "data": [data] }
+        return { "data": data or [] }
+
+    # 혹시 모르는 edge case
+    return { "data": [] }
+
 

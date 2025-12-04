@@ -1,8 +1,8 @@
 # backend/app/routers/output.py
 from fastapi import APIRouter, Form, BackgroundTasks, HTTPException
 import json
-
-from app.services.supabase_service import supabase
+import requests
+from app.services.supabase_service import supabase, SUPABASE_URL, SUPABASE_SERVICE_KEY, normalize_supabase_response
 from app.services.langgraph_service import run_langgraph  # optional
 
 router = APIRouter(prefix="/outputs", tags=["outputs"])
@@ -12,7 +12,7 @@ router = APIRouter(prefix="/outputs", tags=["outputs"])
 def get_outputs(project_id: int):
     try:
         res = supabase.table("output_contents") \
-            .select("id, title, created_at, storage_path") \
+            .select("id, title, created_at, audio_path, script_path") \
             .eq("project_id", project_id) \
             .order("created_at", desc=True) \
             .execute()
@@ -62,7 +62,55 @@ def get_output_status(output_id: int):
 
     return res.data
 
-# generate: Output 생성 요청 -> output_contents row 생성 + 비동기 LangGraph 실행
+# output 삭제
+@router.delete("/{output_id}")
+def delete_output(output_id: int):
+    try:
+        # 존재 여부 확인
+        raw = (
+            supabase.table("output_contents")
+            .select("id, storage_path")
+            .eq("id", output_id)
+            .execute()
+        )
+
+        normalized = normalize_supabase_response(raw)
+        rows = normalized["data"]
+
+         # row 없으면 이미 삭제된 상태 -> 성공 처리
+        if not rows:
+            return {"message": "이미 삭제된 상태입니다.", "deleted_id": output_id}
+
+        check = rows[0]
+
+        # DB 삭제
+        url = f"{SUPABASE_URL}/rest/v1/output_contents?id=eq.{output_id}"
+        headers = {
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+            "Prefer": "return=minimal",
+        }
+
+        res_del = requests.delete(url, headers=headers)
+
+        if res_del.status_code not in (200, 204):
+            print("Delete error:", res_del.text)
+            raise HTTPException(status_code=500, detail="DB 삭제 실패")
+
+        # Storage 삭제
+        storage_path = check.get("storage_path")
+        if storage_path:
+            supabase.storage.from_("outputs").remove([storage_path])
+
+        return {"message": "삭제 완료", "deleted_id": output_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("output 삭제 오류:", e)
+        raise HTTPException(status_code=500, detail="output 소스 삭제 실패")
+
+# generate: output 생성 요청 -> output_contents row 생성 + 비동기 LangGraph 실행
 @router.post("/generate")
 async def generate_output(
     background_tasks: BackgroundTasks,
@@ -113,7 +161,7 @@ async def generate_output(
         print(e)
         raise HTTPException(status_code=500, detail="출력 생성 요청 실패")
 
-# 백그라운드에서 LangGraph 실행 → output_contents 업데이트
+# 백그라운드에서 LangGraph 실행 -> output_contents, output_images 업데이트
 async def process_langgraph_output(output_id, input_ids, host1, host2, style):
     try:
 
@@ -152,18 +200,27 @@ async def process_langgraph_output(output_id, input_ids, host1, host2, style):
         #     style=style
         # )
 
-        # 성공 시 output_contents 업데이트 
-        # => langgraph에서 db에 다 저장하도록 하고 
-        # return으로 성공/실패만 주면 status만 저장하도록 변경
-        # supabase.table("output_contents").update({
-        #     "status": "completed",
-        #     "script_text": result.get("script"),
-        #     "summary": result.get("summary"),
-        #     "storage_path": result.get("audio_url"),
-        #     "metadata": {
-        #         "image_count": len(result.get("images", []))
-        #     }
-        # }).eq("id", output_id).execute()
+        # 성공 시 output_contents 업데이트 (임시)
+    #    supabase.table("output_contents").update({
+    #         "status": "completed",
+    #         "script_text": result.get("script"),         # 스크립트 내용 자체
+    #         "summary": result.get("summary"),
+    #         "title": result.get("title"),
+    #         "audio_path": result.get("audio_url"),       # 오디오 파일 경로 저장
+    #         "script_path": result.get("script_url"),     # 스크립트 txt 파일 경로 저장
+    #         "metadata": {
+    #             "image_count": len(result.get("images", []))
+    #         }
+    #     }).eq("id", output_id).execute()
+
+        # 이미지 여러개 처리하는 걸로 바꿔야 함
+    #    supabase.table("output_images").insert({
+    #         "image_path": result.get("image_path"),       # 이미지 파일 경로 저장
+    #         "img_index": result.get("img_index"),
+    #         "img_description": result.get("img_description"),
+    #         "start_time": result.get("start_time"),
+    #         "end_time": result.get("end_time")
+    #     }).eq("id", output_id).execute()
 
         # 임시 -> 바로 성공(완료) 처리
         supabase.table("output_contents").update({

@@ -3,8 +3,8 @@ from fastapi import APIRouter, UploadFile, Query, File, Form, HTTPException, Dep
 from typing import List
 from datetime import datetime, timedelta
 import uuid, json
-
-from app.services.supabase_service import supabase, upload_bytes
+import requests
+from app.services.supabase_service import supabase, upload_bytes, SUPABASE_URL, SUPABASE_SERVICE_KEY, normalize_supabase_response
 
 router = APIRouter(prefix="/inputs", tags=["inputs"])
 
@@ -102,30 +102,48 @@ async def submit_inputs(
 @router.delete("/{input_id}")
 def delete_input(input_id: int):
     try:
-        # 1) 존재 여부 확인
-        check = supabase.table("input_contents") \
-            .select("id, is_link, storage_path") \
-            .eq("id", input_id) \
-            .single() \
+        # 존재 여부 확인
+        raw = (
+            supabase.table("input_contents")
+            .select("id, is_link, storage_path")
+            .eq("id", input_id)
             .execute()
+        )
 
-        if not check.data:
-            raise HTTPException(status_code=404, detail="입력 소스를 찾을 수 없습니다.")
+        normalized = normalize_supabase_response(raw)
+        rows = normalized["data"]
 
-        # 2) DB 삭제
-        res = supabase.table("input_contents") \
-            .delete() \
-            .eq("id", input_id) \
-            .execute()
+        # row 없으면 이미 삭제된 상태 -> 성공 처리
+        if not rows:
+            return {"message": "이미 삭제된 상태입니다.", "deleted_id": input_id}
 
-        # 3) 파일 타입일 경우 Storage 삭제
-        if not check.data["is_link"]:
-            storage_path = check.data.get("storage_path")
+        check = rows[0]
+
+        # DB 삭제
+        url = f"{SUPABASE_URL}/rest/v1/input_contents?id=eq.{input_id}"
+        headers = {
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+            "Prefer": "return=minimal",
+        }
+
+        res_del = requests.delete(url, headers=headers)
+
+        # 상태코드 검증
+        if res_del.status_code not in (200, 204):
+            print("Delete error:", res_del.text)
+            raise HTTPException(status_code=500, detail="DB 삭제 실패")
+
+        # Storage 삭제
+        if check.get("is_link") is False:
+            storage_path = check.get("storage_path")
             if storage_path:
                 supabase.storage.from_("inputs").remove([storage_path])
 
         return {"message": "삭제 완료", "deleted_id": input_id}
 
+    except HTTPException:
+        raise
     except Exception as e:
-        print(e)
-        raise HTTPException(status_code=500, detail="입력 소스 삭제 실패")
+        print("input 삭제 오류:", e)
+        raise HTTPException(status_code=500, detail="input 소스 삭제 실패")

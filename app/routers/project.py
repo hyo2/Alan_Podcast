@@ -19,16 +19,6 @@ def list_projects(user_id: str):
 @router.post("/projects/create")
 def create_project(payload: dict):
     user_id = payload["user_id"]
-
-    # 유저의 기존 프로젝트 개수 조회
-    count_res = supabase.table("projects") \
-        .select("id") \
-        .eq("user_id", user_id) \
-        .execute()
-
-    project_count = len(count_res.data)
-
-    # 자동 이름 생성 - 지금 이거 안 됨
     title = payload.get("title")
     description = payload.get("description", "")
 
