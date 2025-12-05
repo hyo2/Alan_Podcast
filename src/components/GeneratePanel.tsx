@@ -57,7 +57,7 @@ const GeneratePanel = ({
                     onDelete(o.id);
                   }}
                 >
-                  삭제
+                  ✕
                 </button>
 
                 {/* 제목 */}

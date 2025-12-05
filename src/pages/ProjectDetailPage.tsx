@@ -14,34 +14,44 @@ const ProjectDetailPage = () => {
   const [outputs, setOutputs] = useState<OutputContent[]>([]);
   const [selectedOutputId, setSelectedOutputId] = useState<number | null>(null);
 
-  // input & output 불러오기
+  const fetchInputs = async () => {
+    const res = await fetch(
+      `${API_BASE_URL}/inputs/list?project_id=${projectId}`
+    );
+    const data = await res.json();
+    setInputs(data.inputs ?? []);
+  };
+
+  const fetchOutputs = async () => {
+    const res = await fetch(
+      `${API_BASE_URL}/outputs/list?project_id=${projectId}`
+    );
+    const data = await res.json();
+    setOutputs(data.outputs ?? []);
+  };
+
   useEffect(() => {
     if (!projectId) return;
-
-    const fetchInputs = async () => {
-      const res = await fetch(
-        `${API_BASE_URL}/inputs/list?project_id=${projectId}`
-      );
-      const data = await res.json();
-      setInputs(data.inputs ?? []);
-    };
-
-    const fetchOutputs = async () => {
-      const res = await fetch(
-        `${API_BASE_URL}/outputs/list?project_id=${projectId}`
-      );
-      const data = await res.json();
-      setOutputs(data.outputs ?? []);
-    };
-
     fetchInputs();
     fetchOutputs();
   }, [projectId]);
 
-  // outputs 불러오면 첫 output 자동 선택
+  // 새 input 업로드 후 호출될 함수
+  const handleUploaded = () => {
+    fetchInputs(); // ← 새 input 목록 즉시 갱신
+  };
+
+  // 프로젝트 변경 시 output 선택 초기화
   useEffect(() => {
-    if (outputs.length > 0 && !selectedOutputId) {
-      setSelectedOutputId(outputs[0].id);
+    setSelectedOutputId(null);
+  }, [projectId]);
+
+  // outputs가 바뀌면 항상 최신 output 자동 선택
+  useEffect(() => {
+    if (outputs.length > 0) {
+      setSelectedOutputId(outputs[0].id); // 최신 output
+    } else {
+      setSelectedOutputId(null);
     }
   }, [outputs]);
 
@@ -140,6 +150,7 @@ const ProjectDetailPage = () => {
         projectId={projectId!}
         onGenerated={handleGenerated}
         onDelete={handleDeleteSource}
+        onUploaded={handleUploaded}
       />
 
       <div className="flex w-full h-full bg-gray-50">
@@ -172,9 +183,9 @@ const ProjectDetailPage = () => {
             />
           </div>
 
-          <div className="mt-6">
+          {/* <div className="mt-6">
             <ResourceBar />
-          </div>
+          </div> */}
         </div>
       </div>
     </>

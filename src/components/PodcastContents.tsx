@@ -35,6 +35,15 @@ export default function PodcastContents({ outputId }: { outputId: number }) {
 
   // output 상세 데이터 불러오기
   useEffect(() => {
+    // outputId가 바뀌자마자 이전 상태 즉시 초기화
+    setData(null);
+    setParsedScript([]);
+    setCurrentTime(0);
+    setCurrentImage(null);
+    setAudioUrl("");
+    setScriptUrl("");
+    setSignedImageUrls({});
+
     fetch(`${API_BASE_URL}/outputs/${outputId}`)
       .then((res) => res.json())
       .then((res) => {
@@ -49,7 +58,7 @@ export default function PodcastContents({ outputId }: { outputId: number }) {
           setCurrentImage(res.images[0]);
         }
       });
-  }, [outputId]);
+  }, [outputId]); // outputId가 바뀔 때마다 상세 다시 조회
 
   // 오디오, 스크립트 signed URL 생성
   useEffect(() => {

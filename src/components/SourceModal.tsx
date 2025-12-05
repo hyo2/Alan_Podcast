@@ -18,6 +18,7 @@ interface Props {
   projectId: string;
   onGenerated: (output: OutputContent) => void;
   onDelete: (id: number) => void;
+  onUploaded: () => void;
 }
 
 export default function SourceModal({
@@ -27,6 +28,7 @@ export default function SourceModal({
   projectId,
   onGenerated,
   onDelete,
+  onUploaded,
 }: Props) {
   const userId = localStorage.getItem("user_id") || "";
 
@@ -67,6 +69,20 @@ export default function SourceModal({
 
     fetchVoices();
   }, []);
+
+  useEffect(() => {
+    if (isOpen) {
+      // 모달이 열릴 때 입력값 초기화
+      setSelectedIds([]);
+      setLinks([]);
+      setFiles([]);
+      setHost1("");
+      setHost2("");
+      setStyle("");
+      setTitle("");
+      setErrorMsg("");
+    }
+  }, [isOpen]);
 
   // 체크박스 토글
   const toggleSelect = (id: number) => {
@@ -174,6 +190,9 @@ export default function SourceModal({
 
         const uploadJson = await uploadRes.json();
         newInputIds = uploadJson.inputs.map((i: any) => i.id);
+
+        // 새 input 업로드 완료 알림 -> 부모 inputs 갱신
+        onUploaded();
       }
 
       const finalInputIds = [...selectedIds, ...newInputIds];
@@ -282,7 +301,7 @@ export default function SourceModal({
                           onClick={() => handleDeleteExistingSource(src.id)}
                           className="text-red-500 hover:text-red-600 text-sm"
                         >
-                          삭제
+                          ✕
                         </button>
                       </label>
                     ))}
