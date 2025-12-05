@@ -1,11 +1,17 @@
 # backend/app/routers/output.py
+import os
 from fastapi import APIRouter, Form, BackgroundTasks, HTTPException
 import json
 import requests
-from app.services.supabase_service import supabase, SUPABASE_URL, SUPABASE_SERVICE_KEY, normalize_supabase_response
-from app.services.langgraph_service import run_langgraph  # optional
+from datetime import datetime
+from app.services.supabase_service import supabase, SUPABASE_URL, SUPABASE_SERVICE_KEY, upload_bytes, normalize_supabase_response
+from app.services.langgraph_service import run_langgraph
 
 router = APIRouter(prefix="/outputs", tags=["outputs"])
+
+google_project_id = os.getenv("VERTEX_AI_PROJECT_ID")
+google_region = os.getenv("VERTEX_AI_REGION")
+google_sa_file = os.getenv("VERTEX_AI_SERVICE_ACCOUNT_FILE")
 
 # 프로젝트 output 목록 조회
 @router.get("/list")
@@ -69,7 +75,7 @@ def delete_output(output_id: int):
         # 존재 여부 확인
         raw = (
             supabase.table("output_contents")
-            .select("id, storage_path")
+            .select("id")
             .eq("id", output_id)
             .execute()
         )
@@ -97,11 +103,12 @@ def delete_output(output_id: int):
             print("Delete error:", res_del.text)
             raise HTTPException(status_code=500, detail="DB 삭제 실패")
 
-        # Storage 삭제
-        storage_path = check.get("storage_path")
-        if storage_path:
-            supabase.storage.from_("outputs").remove([storage_path])
-
+        # Storage 삭제 - 오디오, 스크립트 파일
+        audio_path = check.get("audio_path")
+        script_path = check.get("script_path")
+        if audio_path:
+            supabase.storage.from_("outputs").remove([audio_path])
+            supabase.storage.from_("outputs").remove([script_path])
         return {"message": "삭제 완료", "deleted_id": output_id}
 
     except HTTPException:
@@ -145,6 +152,7 @@ async def generate_output(
         # Background로 LangGraph 실행
         background_tasks.add_task(
             process_langgraph_output,
+            project_id=project_id,
             output_id=output_id,
             input_ids=input_ids,
             host1=host1,
@@ -162,10 +170,11 @@ async def generate_output(
         raise HTTPException(status_code=500, detail="출력 생성 요청 실패")
 
 # 백그라운드에서 LangGraph 실행 -> output_contents, output_images 업데이트
-async def process_langgraph_output(output_id, input_ids, host1, host2, style):
+async def process_langgraph_output(project_id, output_id, input_ids, host1, host2, style):
     try:
-
-        # input_ids기반으로  실제 Storage URL 또는 link_url 조회
+        db_project_id = project_id
+        
+        # input_ids기반으로 실제 Storage URL 또는 link_url 있는지 조회
         rows = (
             supabase.table("input_contents")
             .select("id, is_link, storage_path, link_url")
@@ -173,63 +182,134 @@ async def process_langgraph_output(output_id, input_ids, host1, host2, style):
             .execute()
         )
 
+        # ========== input_ids → sources 변환 ==========
+        sources = []
+        for r in rows.data:
+            if r["is_link"]:
+                sources.append(r["link_url"])
+            else:
+                # storage_path = "user/.../file.pdf"
+                storage_path = r["storage_path"]
+
+                # signed URL 생성 (1시간 유효)
+                signed = supabase.storage.from_("project_resources").create_signed_url(
+                    storage_path, 60 * 60
+                )
+
+                if "signedURL" not in signed:
+                    raise Exception(f"Signed URL 생성 실패: {storage_path}")
+
+                sources.append(signed["signedURL"])
+
         if not rows.data:
             raise Exception("input_contents 조회 실패")
 
-        source_urls = []
-        for item in rows.data:
-            if item["is_link"]:
-                source_urls.append(item["link_url"])
-            else:
-                source_urls.append(item["storage_path"])
-
         # 테스트 출력
         print("==== LangGraph 호출 예정 데이터 ====")
+        print("sources:", sources)
         print("output_id:", output_id)
-        print("source_urls:", source_urls)
         print("host1:", host1)
         print("host2:", host2)
         print("style:", style)
 
         # LangGraph 실행
-        # result = await run_langgraph(
-        #     output_id=output_id,
-        #     source_urls=source_urls,
-        #     host1=host1,
-        #     host2=host2,
-        #     style=style
-        # )
+        result = await run_langgraph(
+            sources=sources,
+            project_id=google_project_id,
+            region=google_region,
+            sa_file=google_sa_file,
+            host1=host1,
+            host2=host2,
+            style=style
+        )
 
-        # 성공 시 output_contents 업데이트 (임시)
-    #    supabase.table("output_contents").update({
-    #         "status": "completed",
-    #         "script_text": result.get("script"),         # 스크립트 내용 자체
-    #         "summary": result.get("summary"),
-    #         "title": result.get("title"),
-    #         "audio_path": result.get("audio_url"),       # 오디오 파일 경로 저장
-    #         "script_path": result.get("script_url"),     # 스크립트 txt 파일 경로 저장
-    #         "metadata": {
-    #             "image_count": len(result.get("images", []))
-    #         }
-    #     }).eq("id", output_id).execute()
+        final_title = result["title"]
+        audio_local_path = result["final_podcast_path"]
+        script_local_path = result["transcript_path"]
+        image_local_paths = result["image_paths"]
+
+        # Storage 업로드
+        with open(audio_local_path, "rb") as f:
+            audio_url = upload_bytes(
+                file_bytes=f.read(),
+                folder=f"user/{user_id}/project/{project_id}/outputs",
+                filename="podcast.mp3",
+                content_type="audio/mpeg"
+            )
+
+        with open(script_local_path, "rb") as f:
+            script_url = upload_bytes(
+                file_bytes=f.read(),
+                folder=f"user/{user_id}/project/{project_id}/outputs",
+                filename="script.txt",
+                content_type="text/plain"
+            )
+        
+        uploaded_images = []
+
+        for i, img_path in enumerate(image_local_paths):
+            with open(img_path, "rb") as f:
+                url = upload_bytes(
+                    file_bytes=f.read(),
+                    folder=f"user/{user_id}/project/{project_id}/outputs/images",
+                    filename=f"image_{i}.png",
+                    content_type="image/png"
+                )
+                uploaded_images.append(url)
+
+        # output_contents 업데이트 (임시)
+        supabase.table("output_contents").update({
+            "title" : result.get("title"), # output title 업데이트 추가
+            "status": "completed",
+            "script_text": result.get("script"),         # 스크립트 내용 자체
+            "summary": result.get("summary"),
+            "audio_path": result.get("audio_url"),       # 오디오 파일 경로 저장
+            "script_path": result.get("script_url"),     # 스크립트 txt 파일 경로 저장
+            "metadata": {
+                "image_count": len(result.get("images", []))
+            }
+        }).eq("id", output_id).execute()
+
+        # default 프로젝트 title 변경
+        project_res = supabase.table("projects").select("id, name").eq("id", db_project_id).single().execute()
+
+        if project_res.data:
+            current_name = project_res.data["name"]
+            DEFAULT_NAMES = ["새 프로젝트", "", None]
+
+            if current_name in DEFAULT_NAMES:
+                new_project_name = f"{final_title} 프로젝트" # `첫 팟캐스트 제목 + 프로젝트`로 프로젝트 이름 지정
+                supabase.table("projects").update({
+                    "name": new_project_name
+                }).eq("id", project_id).execute()
 
         # 이미지 여러개 처리하는 걸로 바꿔야 함
-    #    supabase.table("output_images").insert({
-    #         "image_path": result.get("image_path"),       # 이미지 파일 경로 저장
-    #         "img_index": result.get("img_index"),
-    #         "img_description": result.get("img_description"),
-    #         "start_time": result.get("start_time"),
-    #         "end_time": result.get("end_time")
-    #     }).eq("id", output_id).execute()
+        images = result.get("images", [])
+        if isinstance(images, list):
+            for i, url in enumerate(uploaded_images):
+                supabase.table("output_images").insert({
+                    "output_id": output_id,
+                    "image_path": url,
+                    "img_index": i,
+                    "start_time": timeline[i]["start"],
+                    "end_time": timeline[i]["end"],
+                    "img_description": result["metadata"]["image_descriptions"][i],
+                }).execute()
+
 
         # 임시 -> 바로 성공(완료) 처리
         supabase.table("output_contents").update({
-            "status": "completed",
-        }).eq("id", output_id).execute()
+                "status": "completed",
+            }).eq("id", output_id).execute()
+
+        # 성공 시 input_contents의 last_used_at 업데이트
+        supabase.table("input_contents") \
+                .update({"last_used_at": datetime.utcnow().isoformat()}) \
+                .in_("id", input_ids) \
+                .execute()
         
     except Exception as e:
         print("[LangGraph Error]", e)
         supabase.table("output_contents").update({
             "status": "failed",
-            "error_message": str(e)
         }).eq("id", output_id).execute()
