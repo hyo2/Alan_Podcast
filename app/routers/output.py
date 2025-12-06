@@ -222,8 +222,10 @@ async def process_langgraph_output(project_id, output_id, input_ids, host1, host
             host2=host2,
             style=style
         )
+        # langgarph 호출 결과
+        print("langgraph 호출 후")
 
-        final_title = result["title"]
+        # final_title = result["title"]
         audio_local_path = result["final_podcast_path"]
         script_local_path = result["transcript_path"]
         image_local_paths = result["image_paths"]
@@ -259,7 +261,7 @@ async def process_langgraph_output(project_id, output_id, input_ids, host1, host
 
         # output_contents 업데이트 (임시)
         supabase.table("output_contents").update({
-            "title" : result.get("title"), # output title 업데이트 추가
+            # "title" : result.get("title"), # output title 업데이트 추가
             "status": "completed",
             "script_text": result.get("script"),         # 스크립트 내용 자체
             "summary": result.get("summary"),

@@ -24,8 +24,8 @@ from app.langgraph_pipeline.vision.image_generation_node import ImageGenerationN
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------
-# Wrapper nodes (LangGraph 1.x는 함수형 runnable을 권장)
+# -------------------------F--------------------------------------------
+# Wrapper nodes
 # ---------------------------------------------------------------------
 
 def read_transcript_node(state: PipelineState):
@@ -42,76 +42,113 @@ def read_transcript_node(state: PipelineState):
         return {"errors": state.get("errors", []) + [str(e)]}
 
 
-def script_parser_node(state):
+def script_parser_node(state: PipelineState):
+    """타임스탬프 있는 스크립트 → scenes(list[PodcastScene])"""
     parser = ScriptParserNode()
     scenes = parser.parse_from_text(state["script_text"])
     return {"scenes": scenes}
 
 
 def metadata_node(state: PipelineState):
+    """
+    scenes(list[PodcastScene]) → metadata(PodcastMetadata)
+    MetadataExtractionNode.__call__은 dict state를 받고
+    { **state, "metadata": PodcastMetadata } 를 리턴한다고 가정
+    """
     node = MetadataExtractionNode(
         project_id=state["project_id"],
-        location=state["region"]
+        location=state["region"],
     )
-
-    # MetadataExtractionNode는 dict 형태의 state를 받아야 함
     out = node({"scenes": state["scenes"]})
-    metadata = out["metadata"]
-
-    # dataclass 그대로 반환 (ImagePlanningNode가 변환 처리함)
-    return {"metadata": metadata}
+    return {"metadata": out["metadata"]}
 
 
-def image_planning_node(state):
+def image_planning_node(state: PipelineState):
+    """
+    script_text + metadata → image_plans(list[ImagePlan])
+    ImagePlanningNode.__call__은 dict state를 받고
+    { **state, "image_plans": [...] } 를 리턴한다고 가정
+    """
     node = ImagePlanningNode(
         project_id=state["project_id"],
-        location=state["region"]
+        location=state["region"],
     )
-    out_state = node({
+    out = node({
         "full_script": state["script_text"],
-        "metadata": state["metadata"]
+        "metadata": state["metadata"],
     })
-    return {"image_plans": out_state["image_plans"]}
+    return {"image_plans": out["image_plans"]}
 
 
-def prompt_generation_node(state):
+def prompt_generation_node(state: PipelineState):
+    """
+    image_plans + metadata → image_prompts(list[dict])
+    PromptGenerationNode.__call__은 dict state를 받고
+    { **state, "image_prompts": [...] } 를 리턴
+    """
     node = PromptGenerationNode(
         project_id=state["project_id"],
-        location=state["region"]
+        location=state["region"],
     )
-    out_state = node({
+    out = node({
         "image_plans": state["image_plans"],
-        "metadata": state["metadata"]
+        "metadata": state["metadata"],
     })
-    return {"image_prompts": out_state["image_prompts"]}
+    return {"image_prompts": out["image_prompts"]}
 
 
-def timestamp_mapper_node(state):
+def timestamp_mapper_node(state: PipelineState):
+    """
+    image_prompts(list[dict]) → timeline(list[TimelineEntry])
+    TimestampMapper.__call__은 dict state를 받고
+    { **state, "timeline": [...] } 를 리턴
+    """
     node = TimestampMapper()
     out = node({
-        "image_prompts": state["image_prompts"]
+        "image_prompts": state["image_prompts"],
     })
     return {"timeline": out["timeline"]}
 
 
-def image_generation_node(state):
+def image_generation_node(state: PipelineState):
+    """
+    image_prompts(list[dict]) → image_paths(dict[image_id → path])
+    ImageGenerationNode.__call__은 dict state를 받고 
+    { **state, "image_paths": {...} } 를 리턴
+    """
     node = ImageGenerationNode(
         project_id=state["project_id"],
         location=state["region"],
-        output_dir="outputs/images"
+        output_dir="outputs/images",
     )
-    out_state = node({"image_prompts": state["image_prompts"]})
-    return {"image_paths": out_state["image_paths"]}
-
-
+    out = node({
+        "image_prompts": state["image_prompts"],
+    })
+    
+    # ⭐ 추가: image_prompts 정보를 image_paths와 연결
+    # 혹시 다른 노드에서 title을 찾는다면 여기서 매핑 제공
+    image_metadata = {}
+    for prompt_data in state.get("image_prompts", []):
+        image_id = prompt_data.get("image_id")
+        if image_id:
+            image_metadata[image_id] = {
+                "title": prompt_data.get("image_title", ""),
+                "timestamp": prompt_data.get("primary_timestamp", ""),
+                "duration": prompt_data.get("duration", 0),
+            }
+    
+    return {
+        "image_paths": out["image_paths"],
+        "image_metadata": image_metadata,  # 추가 정보 제공
+    }
 
 # ---------------------------------------------------------------------
-# Create LangGraph 1.x Graph
+# Create LangGraph Pipeline
 # ---------------------------------------------------------------------
 def create_full_graph():
     graph = StateGraph(PipelineState)
 
-    # podcast nodes
+    # Podcast part
     graph.add_node("extract_texts", extract_texts_node)
     graph.add_node("combine_texts", combine_texts_node)
     graph.add_node("generate_script", generate_script_node)
@@ -119,10 +156,10 @@ def create_full_graph():
     graph.add_node("merge_audio", merge_audio_node)
     graph.add_node("generate_transcript", generate_transcript_node)
 
-    # bridge
+    # Bridge
     graph.add_node("read_transcript", read_transcript_node)
 
-    # vision
+    # Vision part
     graph.add_node("parse_script", script_parser_node)
     graph.add_node("extract_metadata", metadata_node)
     graph.add_node("plan_images", image_planning_node)
