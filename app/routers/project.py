@@ -20,7 +20,7 @@ def list_projects(user_id: str):
 def create_project(payload: dict):
     user_id = payload["user_id"]
     # title = payload.get("title")
-    title = payload.get("새 프로젝트") # default title 지정
+    title = payload.get("title", "새 프로젝트") # default title 지정
     description = payload.get("description", "")
 
     res = supabase.table("projects").insert({
