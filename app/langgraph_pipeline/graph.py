@@ -1,7 +1,24 @@
-# app/langgraph_pipeline/graph.py
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 import logging
 from langgraph.graph import StateGraph, END
 from .state import PipelineState
+
+# PostgreSQL Checkpointing - 일단 주석 처리
+# from langgraph_checkpoint_postgres import PostgresSaver
+# import psycopg
+
+# DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# PostgresSaver 초기화
+# if DATABASE_URL:
+#     checkpointer = PostgresSaver.from_conn_string(DATABASE_URL)
+# else:
+#     checkpointer = None
+
+checkpointer = None  # 일단 체크포인터 없이 사용
 
 # Podcast nodes
 from app.langgraph_pipeline.podcast.orchestrator import (
@@ -24,10 +41,7 @@ from app.langgraph_pipeline.vision.image_generation_node import ImageGenerationN
 logger = logging.getLogger(__name__)
 
 
-# -------------------------F--------------------------------------------
 # Wrapper nodes
-# ---------------------------------------------------------------------
-
 def read_transcript_node(state: PipelineState):
     """transcript_path → script_text"""
     path = state.get("transcript_path")
@@ -53,7 +67,7 @@ def metadata_node(state: PipelineState):
     """
     scenes(list[PodcastScene]) → metadata(PodcastMetadata)
     MetadataExtractionNode.__call__은 dict state를 받고
-    { **state, "metadata": PodcastMetadata } 를 리턴한다고 가정
+    { **state, "metadata": PodcastMetadata } 를 리턴
     """
     node = MetadataExtractionNode(
         project_id=state["project_id"],
@@ -67,7 +81,7 @@ def image_planning_node(state: PipelineState):
     """
     script_text + metadata → image_plans(list[ImagePlan])
     ImagePlanningNode.__call__은 dict state를 받고
-    { **state, "image_plans": [...] } 를 리턴한다고 가정
+    { **state, "image_plans": [...] } 를 리턴
     """
     node = ImagePlanningNode(
         project_id=state["project_id"],
@@ -125,7 +139,7 @@ def image_generation_node(state: PipelineState):
         "image_prompts": state["image_prompts"],
     })
     
-    # ⭐ 추가: image_prompts 정보를 image_paths와 연결
+    # image_prompts 정보를 image_paths와 연결
     # 혹시 다른 노드에서 title을 찾는다면 여기서 매핑 제공
     image_metadata = {}
     for prompt_data in state.get("image_prompts", []):
@@ -142,9 +156,8 @@ def image_generation_node(state: PipelineState):
         "image_metadata": image_metadata,  # 추가 정보 제공
     }
 
-# ---------------------------------------------------------------------
+
 # Create LangGraph Pipeline
-# ---------------------------------------------------------------------
 def create_full_graph():
     graph = StateGraph(PipelineState)
 
@@ -185,4 +198,4 @@ def create_full_graph():
     graph.add_edge("map_timestamps", "generate_images")
     graph.add_edge("generate_images", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)

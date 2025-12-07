@@ -1,3 +1,6 @@
+# Project outputs (do not commit generated files)
+outputs/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

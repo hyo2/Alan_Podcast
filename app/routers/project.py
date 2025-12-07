@@ -2,10 +2,10 @@ from fastapi import APIRouter, HTTPException
 from app.services.supabase_service import supabase, delete_project_folder
 from datetime import datetime
 
-router = APIRouter()
+router = APIRouter(prefix="/projects", tags=["projects"])
 
 # 프로젝트 목록 조회
-@router.get("/projects")
+@router.get("/")
 def list_projects(user_id: str):
     res = supabase.table("projects") \
         .select("*") \
@@ -16,10 +16,11 @@ def list_projects(user_id: str):
     return res.data
 
 # 새 프로젝트 생성
-@router.post("/projects/create")
+@router.post("/create")
 def create_project(payload: dict):
     user_id = payload["user_id"]
-    title = payload.get("title")
+    # title = payload.get("title")
+    title = payload.get("새 프로젝트") # default title 지정
     description = payload.get("description", "")
 
     res = supabase.table("projects").insert({
@@ -32,7 +33,7 @@ def create_project(payload: dict):
 
 
 # 프로젝트 전체 삭제 - 폴더, 파일 포함
-@router.delete("/projects/{project_id}")
+@router.delete("/{project_id}")
 def delete_project(project_id: int, user_id: str):
     """
     프로젝트 전체 삭제:
