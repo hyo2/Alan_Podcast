@@ -2,8 +2,7 @@
   "$schema": "https://langgra.ph/schema.json",
   "dependencies": ["."],
   "graphs": {
-    "default": "graph:graph"
+    "default": "app.langgraph_pipeline.graph:create_full_graph"
   },
-  "env": ".env",
   "image_distro": "wolfi"
 }
