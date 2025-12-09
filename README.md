@@ -52,7 +52,8 @@ backend/frontend 각각의 README는 각 폴더 내부에서 확인할 수 있�
 - LangGraph / LangChain  
 - Google Gemini (Vertex AI)  
 - Supabase (DB, Auth, Storage)  
-- Google Cloud TTS  
+- Gemini TTS
+- Nano Banana
 - 백그라운드 태스크 기반 LangGraph 실행  
 
 ### Frontend (React)
