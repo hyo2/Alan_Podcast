@@ -214,7 +214,7 @@ export default function PodcastContents({ outputId }: { outputId: number }) {
 
   return (
     <div className="h-full flex flex-col bg-white">
-      {/* 상단: 제목 / 요약 / 오디오 */}
+      {/* 상단: 제목 / 오디오 */}
       <div className="flex-shrink-0 p-6 border-b">
         <h1 className="text-xl font-bold mb-2">{output.title}</h1>
 
@@ -243,49 +243,10 @@ export default function PodcastContents({ outputId }: { outputId: number }) {
         )}
       </div>
 
-      {/* 하단: 좌측 이미지 / 우측 스크립트 */}
+      {/* 하단: 스크립트 */}
       <div className="flex-1 flex gap-6 p-6 min-h-0 overflow-hidden">
-        {/* 좌측 이미지 */}
-        <div className="w-1/2 flex flex-col min-h-0">
-          {/* 메인 이미지 */}
-          <div className="flex-1 bg-gray-100 rounded-lg flex items-center justify-center overflow-hidden mb-3">
-            {currentImage && signedImageUrls[currentImage.img_index] ? (
-              <img
-                src={signedImageUrls[currentImage.img_index]}
-                className="max-h-full max-w-full object-contain rounded"
-                alt="Current"
-              />
-            ) : (
-              <div className="text-gray-400">이미지 없음</div>
-            )}
-          </div>
-
-          {/* 썸네일 - 고정 높이 + 가로 스크롤 */}
-          <div
-            className="flex-shrink-0 overflow-x-auto flex gap-2"
-            style={{ height: "100px" }}
-          >
-            {images.map((img: ImageItem) =>
-              signedImageUrls[img.img_index] ? (
-                <img
-                  key={img.img_index}
-                  src={signedImageUrls[img.img_index]}
-                  className={`h-full flex-shrink-0 rounded cursor-pointer transition-all ${
-                    currentImage?.img_index === img.img_index
-                      ? "ring-4 ring-blue-500"
-                      : "hover:ring-2 hover:ring-gray-300"
-                  }`}
-                  style={{ minWidth: "100px" }}
-                  onClick={() => jumpToTime(parseFloat(img.start_time as any))}
-                  alt={`Thumbnail ${img.img_index}`}
-                />
-              ) : null
-            )}
-          </div>
-        </div>
-
-        {/* 우측 스크립트 */}
-        <div className="w-1/2 flex flex-col min-h-0 border-l pl-6">
+        {/* 스크립트 */}
+        <div className="flex flex-col min-h-0 pl-6">
           {/* 스크립트 헤더 + 다운로드 메뉴 */}
           <div className="flex items-center justify-between mb-3 flex-shrink-0">
             <h2 className="font-semibold">스크립트</h2>
