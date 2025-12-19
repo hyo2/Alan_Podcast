@@ -22,14 +22,10 @@ export default function PodcastContents({ outputId }: { outputId: number }) {
   const [data, setData] = useState<any>(null);
   const [parsedScript, setParsedScript] = useState<ParsedLine[]>([]);
   const [currentTime, setCurrentTime] = useState(0);
-  const [currentImage, setCurrentImage] = useState<ImageItem | null>(null);
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
 
   const [audioUrl, setAudioUrl] = useState("");
   const [scriptUrl, setScriptUrl] = useState("");
-  const [signedImageUrls, setSignedImageUrls] = useState<{
-    [key: number]: string;
-  }>({});
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const downloadMenuRef = useRef<HTMLDivElement | null>(null);
@@ -38,10 +34,8 @@ export default function PodcastContents({ outputId }: { outputId: number }) {
     setData(null);
     setParsedScript([]);
     setCurrentTime(0);
-    setCurrentImage(null);
     setAudioUrl("");
     setScriptUrl("");
-    setSignedImageUrls({});
 
     fetch(`${API_BASE_URL}/outputs/${outputId}`)
       .then((res) => res.json())
@@ -50,10 +44,6 @@ export default function PodcastContents({ outputId }: { outputId: number }) {
 
         const parsed = parseScript(res.output.script_text || "");
         setParsedScript(parsed);
-
-        if (res.images.length > 0) {
-          setCurrentImage(res.images[0]);
-        }
       })
       .catch((err) => {
         console.error("output detail fetch error:", err);
@@ -79,31 +69,12 @@ export default function PodcastContents({ outputId }: { outputId: number }) {
   }, [data]);
 
   useEffect(() => {
-    if (!data?.images) return;
-
-    const loadSignedImages = async () => {
-      const result: any = {};
-      for (const img of data.images) {
-        const res = await fetch(
-          `${API_BASE_URL}/storage/signed-url?path=${img.img_path}`
-        );
-        const json = await res.json();
-        result[img.img_index] = json.url;
-      }
-      setSignedImageUrls(result);
-    };
-
-    loadSignedImages();
-  }, [data]);
-
-  useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
     const handler = () => {
       const t = audio.currentTime;
       setCurrentTime(t);
-      updateCurrentImage(t);
     };
 
     audio.addEventListener("timeupdate", handler);
@@ -128,18 +99,6 @@ export default function PodcastContents({ outputId }: { outputId: number }) {
       document.removeEventListener("mousedown", handleClickOutside);
     };
   }, []);
-
-  const updateCurrentImage = (t: number) => {
-    if (!data?.images) return;
-
-    const img = data.images.find((i: ImageItem) => {
-      const start = parseFloat(i.start_time as any);
-      const end = parseFloat(i.end_time as any);
-      return t >= start && t <= end;
-    });
-
-    if (img) setCurrentImage(img);
-  };
 
   const jumpToTime = (sec: number) => {
     if (audioRef.current) {
@@ -210,7 +169,7 @@ export default function PodcastContents({ outputId }: { outputId: number }) {
     );
   }
 
-  const { output, images } = data;
+  const { output } = data;
 
   return (
     <div className="h-full flex flex-col bg-white">
