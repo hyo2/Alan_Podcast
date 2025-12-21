@@ -10,6 +10,13 @@ google_project_id = os.getenv("VERTEX_AI_PROJECT_ID")
 google_region = os.getenv("VERTEX_AI_REGION")
 google_sa_file = os.getenv("VERTEX_AI_SERVICE_ACCOUNT_FILE")
 
+# 안전장치: Railway에서 환경 변수가 없으면 에러
+if not google_sa_file:
+    raise RuntimeError(
+        "❌ VERTEX_AI_SERVICE_ACCOUNT_FILE 환경 변수가 설정되지 않았습니다!\n"
+        "Railway 환경: VERTEX_AI_SERVICE_ACCOUNT_JSON을 설정하고 vertex_env_patch.py가 실행되어야 합니다.\n"
+        "로컬 환경: VERTEX_AI_SERVICE_ACCOUNT_FILE을 .env에 설정하세요."
+    )
 
 def update_output_step(output_id: int, current_step: str):
     """output의 현재 진행 단계 업데이트"""

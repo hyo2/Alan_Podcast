@@ -5,16 +5,24 @@ def patch_vertex_ai_env():
     """
     Railway 환경에서
     VERTEX_AI_SERVICE_ACCOUNT_JSON → 임시 파일로 변환
-    기존 VERTEX_AI_SERVICE_ACCOUNT_FILE 경로를 덮어쓴다
+    
+    ⭐ 핵심: VERTEX_AI_SERVICE_ACCOUNT_FILE 환경 변수도 설정!
     """
     creds_json = os.getenv("VERTEX_AI_SERVICE_ACCOUNT_JSON")
     if not creds_json:
-        return  # 로컬 환경 or 이미 파일 방식이면 그냥 패스
+        # 로컬 환경이거나 이미 파일 경로가 있으면 패스
+        return
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as f:
-        f.write(creds_json.encode("utf-8"))
+    print("🔧 Railway 환경 감지: JSON → 임시 파일 변환 중...")
+
+    # 임시 파일 생성 (삭제하지 않음)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode='w') as f:
+        f.write(creds_json)
         temp_path = f.name
 
-    # ⭐ 기존 코드가 쓰는 env를 여기서 덮어씀
+    # ⭐ 핵심: 두 환경 변수 모두 설정!
     os.environ["VERTEX_AI_SERVICE_ACCOUNT_FILE"] = temp_path
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_path
+    
+    print(f"✅ 임시 서비스 계정 파일 생성: {temp_path}")
+    print(f"✅ VERTEX_AI_SERVICE_ACCOUNT_FILE 환경 변수 설정 완료")
