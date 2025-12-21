@@ -6,17 +6,11 @@ from app.services.supabase_service import supabase, upload_bytes, BUCKET
 from app.services.langgraph_service import run_langgraph, CancelledException
 from app.utils.output_helpers import output_exists
 
+# ⭐ 환경 변수는 로드하되, 체크는 하지 않음 (함수 실행 시점에 체크)
 google_project_id = os.getenv("VERTEX_AI_PROJECT_ID")
 google_region = os.getenv("VERTEX_AI_REGION")
 google_sa_file = os.getenv("VERTEX_AI_SERVICE_ACCOUNT_FILE")
 
-# 안전장치: Railway에서 환경 변수가 없으면 에러
-if not google_sa_file:
-    raise RuntimeError(
-        "❌ VERTEX_AI_SERVICE_ACCOUNT_FILE 환경 변수가 설정되지 않았습니다!\n"
-        "Railway 환경: VERTEX_AI_SERVICE_ACCOUNT_JSON을 설정하고 vertex_env_patch.py가 실행되어야 합니다.\n"
-        "로컬 환경: VERTEX_AI_SERVICE_ACCOUNT_FILE을 .env에 설정하세요."
-    )
 
 def update_output_step(output_id: int, current_step: str):
     """output의 현재 진행 단계 업데이트"""
@@ -84,21 +78,27 @@ async def process_langgraph_output(
     """
     Storage에서 파일을 직접 다운로드하여 로컬 임시 파일로 저장 후 처리
     """
+    # ⭐ 함수 시작 시점에 체크 (모듈 로드가 아닌!)
+    if not google_sa_file:
+        raise RuntimeError(
+            "❌ VERTEX_AI_SERVICE_ACCOUNT_FILE 환경 변수가 설정되지 않았습니다!\n"
+            "vertex_env_patch.py가 실행되었는지 확인하세요."
+        )
+    
     temp_files = []
     
     try:
         print(f"LangGraph 처리 시작 (Output ID: {output_id})")
         print(f"주 소스 ID: {main_input_id}")
 
-        # 🔥 초기 상태: start
         update_output_step(output_id, "start")
 
-        # 🔥 시작 시점 확인
         if not output_exists(output_id):
             print(f"[process_langgraph_output] 시작 시점에 output_id={output_id}가 이미 없음. 작업 중단.")
             return
 
-        # 1) input_contents -> 실제 파일 소스 준비
+        # ... 나머지 코드는 기존과 동일 ...
+
         rows = (
             supabase.table("input_contents")
             .select("id, is_link, storage_path, link_url, is_main")
@@ -157,12 +157,10 @@ async def process_langgraph_output(
         print(f"\n주 소스: {len(main_sources)}개, 보조 소스: {len(aux_sources)}개 소스 준비 완료")
         print(f"{'='*80}\n")
 
-        # 🔥 step 업데이트 콜백 함수
         def step_callback(step: str):
             if output_exists(output_id):
                 update_output_step(output_id, step)
 
-        # 2) LangGraph 실행 (🔥 CancelledException 처리)
         try:
             result = await run_langgraph(
                 main_sources=main_sources,
@@ -179,7 +177,6 @@ async def process_langgraph_output(
                 step_callback=step_callback
             )
         except CancelledException as ce:
-            # 🔥 사용자가 취소한 경우 - 정상 종료
             print(f"✅ 사용자가 output {output_id}를 취소함: {ce}")
             return
 
@@ -191,12 +188,10 @@ async def process_langgraph_output(
 
         print(f"Title: {title_text}")
 
-        # 3) output이 여전히 존재하는지 재확인
         if not output_exists(output_id):
             print(f"[LangGraph] Output 결과 저장 직전에 output_id={output_id}가 삭제됨. 파일 업로드/DB 업데이트 스킵.")
             return
 
-        # 4) Storage 업로드
         base_audio_name = os.path.basename(audio_local)
         base_script_name = os.path.basename(script_local)
 
@@ -218,7 +213,6 @@ async def process_langgraph_output(
 
         print(f"Storage에 Output 파일 업로드 완료")
 
-        # 5) DB 업데이트: output_contents
         if not output_exists(output_id):
             print(f"[LangGraph] Output 업로드 후 output_id={output_id}가 삭제됨 -> 업로드 파일 제거/DB 업데이트 스킵")
             storage = supabase.storage.from_(BUCKET)
@@ -237,7 +231,6 @@ async def process_langgraph_output(
 
             return
         
-        # 타임스탬프 포함 transcript 파일 읽기
         try:
             with open(script_local, "r", encoding="utf-8") as f:
                 transcript_text = f.read()
@@ -245,7 +238,6 @@ async def process_langgraph_output(
             print("Transcript 파일 읽기 실패:", e)
             transcript_text = result.get("script", "")
 
-        # DB 업데이트: output_contents
         supabase.table("output_contents").update({
             "title": title_text,
             "status": "completed",
@@ -255,7 +247,6 @@ async def process_langgraph_output(
             "current_step": "completed"
         }).eq("id", output_id).execute()
 
-        # 6) 프로젝트 이름 업데이트
         project_row = supabase.table("projects").select("title").eq("id", project_id).single().execute()
 
         if project_row.data and project_row.data["title"] in ["새 프로젝트", "", None]:
@@ -263,7 +254,6 @@ async def process_langgraph_output(
                 "title": f"{title_text} 프로젝트"
             }).eq("id", project_id).execute()
 
-        # 7) input_contents 만료일 업데이트
         now = datetime.utcnow()
         supabase.table("input_contents").update({
             "last_used_at": now.isoformat(),
@@ -273,7 +263,6 @@ async def process_langgraph_output(
         print(f"\n처리 완료(completed)\n{'='*80}\n")
 
     except CancelledException:
-        # 🔥 이미 위에서 처리했으므로 여기선 그냥 패스
         print(f"✅ Output {output_id} 취소됨 - 정상 종료")
         
     except Exception as e:
@@ -283,7 +272,6 @@ async def process_langgraph_output(
         import traceback
         traceback.print_exc()
         
-        # 🔥 오류 발생 시에도 output이 존재하는지 확인
         if output_exists(output_id):
             try:
                 supabase.table("output_contents").update({
@@ -299,7 +287,6 @@ async def process_langgraph_output(
             print(f"⚠️ Output {output_id}가 이미 삭제되어 오류 상태 업데이트 스킵")
     
     finally:
-        # 임시 파일 정리
         for temp_file in temp_files:
             try:
                 if os.path.exists(temp_file):
