@@ -284,7 +284,9 @@ const CompletedPage = () => {
             </div>
           </div>
 
-          <audio ref={audioRef} src={audioUrl} className="hidden" />
+          {audioUrl && (
+            <audio ref={audioRef} src={audioUrl} className="hidden" />
+          )}
         </div>
 
         {/* Script Preview */}

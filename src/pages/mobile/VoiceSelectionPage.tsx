@@ -179,7 +179,7 @@ const VoiceSelectionPage = () => {
             const isPlaying = playingVoice === voice.name;
 
             return (
-              <button
+              <div
                 key={voice.name}
                 onClick={() =>
                   setSelectedVoice({
@@ -248,7 +248,7 @@ const VoiceSelectionPage = () => {
                     )}
                   </div>
                 </div>
-              </button>
+              </div>
             );
           })}
         </div>

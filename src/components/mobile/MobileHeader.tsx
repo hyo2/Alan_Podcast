@@ -26,11 +26,14 @@ const MobileHeader = () => {
   return (
     <header className="sticky top-0 z-20 bg-white border-b px-4 py-3 flex items-center justify-between">
       {/* Logo */}
-      <div className="flex items-center gap-2">
+      <div
+        className="flex items-center gap-2 cursor-pointer"
+        onClick={() => navigate("/mobile")}
+      >
         <div className="w-8 h-8 bg-gray-900 rounded flex items-center justify-center">
           <span className="text-white font-bold text-sm">A</span>
         </div>
-        <h1 className="text-base font-bold">Alan AI 팟캐스트</h1>
+        <h1 className="text-base font-bold">AI Pods</h1>
       </div>
 
       {/* Actions */}
