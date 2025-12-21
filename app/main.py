@@ -13,7 +13,8 @@ from app.routers import auth, input, output, project, storage, voice
 app = FastAPI(
     title="AI Pods API",
     description="AI Pods API description",
-    version="1.0.0"
+    version="1.0.0",
+    redirect_slashes=False
 )
 
 FRONTEND_URL = os.getenv("FRONTEND_URL")
