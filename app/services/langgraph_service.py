@@ -107,6 +107,7 @@ async def run_langgraph(
         )
 
     return {
+        "source_data" : final_state["source_data"],
         "final_podcast_path": final_state["final_podcast_path"],
         "transcript_path": final_state.get("transcript_path", ""),
         "script": final_state.get("script", ""),

@@ -6,7 +6,7 @@ from app.services.supabase_service import supabase, upload_bytes, BUCKET
 from app.services.langgraph_service import run_langgraph, CancelledException
 from app.utils.output_helpers import output_exists
 
-# ⭐ 모듈 레벨 변수 제거 - 함수 실행 시점에 읽도록 변경
+# 모듈 레벨 변수 제거 - 함수 실행 시점에 읽도록 변경
 
 
 def update_output_step(output_id: int, current_step: str):
@@ -75,7 +75,7 @@ async def process_langgraph_output(
     """
     Storage에서 파일을 직접 다운로드하여 로컬 임시 파일로 저장 후 처리
     """
-    # ⭐ 함수 시작 시점에 환경 변수 읽기 (모듈 로드 시점이 아닌!)
+    # 함수 시작 시점에 환경 변수 읽기 (모듈 로드 시점이 아닌!)
     google_project_id = os.getenv("VERTEX_AI_PROJECT_ID")
     google_region = os.getenv("VERTEX_AI_REGION")
     google_sa_file = os.getenv("VERTEX_AI_SERVICE_ACCOUNT_FILE")
@@ -243,13 +243,17 @@ async def process_langgraph_output(
             print("Transcript 파일 읽기 실패:", e)
             transcript_text = result.get("script", "")
 
+        # 사용자 input 데이터에 대한 metadata
+        source_data = result["source_data"]
+
         supabase.table("output_contents").update({
             "title": title_text,
             "status": "completed",
             "audio_path": audio_url,
             "script_path": script_url,
             "script_text": transcript_text,
-            "current_step": "completed"
+            "current_step": "completed",
+            "metadata" : source_data
         }).eq("id", output_id).execute()
 
         project_row = supabase.table("projects").select("title").eq("id", project_id).single().execute()
