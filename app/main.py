@@ -1,4 +1,5 @@
 # app/main.py
+from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -6,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from fastapi import HTTPException
 import os
 
 from app.routers import auth, input, output, project, storage, voice
@@ -69,11 +71,22 @@ app.include_router(voice.router, prefix="/api")
 app.include_router(storage.router, prefix="/api")
 
 # Frontend (mobile only)
+APP_DIR = Path(__file__).resolve().parent          # .../backend/app
+STATIC_DIR = APP_DIR / "static"                    # .../backend/app/static
+FAVICON_PATH = STATIC_DIR / "alan_favicon.svg"     # .../backend/app/static/alan_favicon.svg
+
 app.mount(
-    "/assets",
-    StaticFiles(directory="app/static/assets"),
+    "/assets", 
+    StaticFiles(directory=str(STATIC_DIR / "assets")), 
     name="assets"
 )
+
+@app.get("/alan_favicon.svg")
+def favicon():
+    if not FAVICON_PATH.is_file():
+        # 디버깅용: 어떤 경로를 보고 있는지 에러 메시지로 확인
+        raise HTTPException(status_code=404, detail=f"favicon not found: {FAVICON_PATH}")
+    return FileResponse(FAVICON_PATH, media_type="image/svg+xml")
 
 @app.get("/mobile")
 def serve_mobile():
