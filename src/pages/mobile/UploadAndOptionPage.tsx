@@ -174,7 +174,16 @@ const UploadAndOptionsPage = () => {
             </span>
           </div>
           <button
-            onClick={() => navigate("/mobile/voice-selection")}
+            onClick={() =>
+              navigate("/mobile/voice-selection", {
+                state: {
+                  projectId: existingProjectId,
+                  // (선택) 현재 값도 넘기면 UX 좋아짐
+                  selectedVoice,
+                  selectedVoiceLabel,
+                },
+              })
+            }
             className="text-blue-600 text-sm font-medium"
           >
             변경하기
