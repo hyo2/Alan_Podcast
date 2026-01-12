@@ -1,4 +1,4 @@
-# app/langgraph_pipeline/podcast/cli.py 근데 이제 cli 는 필요없지 않나?
+# app/langgraph_pipeline/podcast/cli.py - CLI 테스트 용
 import os
 import sys
 import argparse

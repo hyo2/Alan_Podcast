@@ -30,14 +30,16 @@ python-pptx>=0.6.23          # PPTX 파일 처리
 python-docx==1.2.0
 pypdf==6.3.0
 pdfplumber==0.11.4           # PDF 텍스트 추출 (MIT License)
-pdf2image>=1.17.0            # PDF → 이미지 변환 (MIT License)
+pdf2image>=1.17.0            # PDF → 이미지 변환(OCR용) (MIT License)
 reportlab>=4.0.7             # PDF 생성 (한글 지원)
 beautifulsoup4==4.14.2
 pillow==11.0.0
 
+# -----------------------------
+# OCR
+# -----------------------------
 paddlepaddle==3.2.2
 paddleocr==3.3.2
-PyMuPDF==1.26.7
 
 # -----------------------------
 # Network
