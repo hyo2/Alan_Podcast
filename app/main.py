@@ -1,6 +1,6 @@
 # app/main.py
 from pathlib import Path
-from . import api
+from .routers import health
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -17,10 +17,11 @@ import os
 # 환경변수 로드 (가장 먼저 실행)
 from config import settings
 
-from app.routers import auth, input, output, project, storage, voice
+from app.routers import auth, input, output, project, storage, voice, channel
 from app.utils.vertex_env_patch import patch_vertex_ai_env
 from middleware.internal_auth import InternalAuthMiddleware
 from middleware.cors import setup_cors
+
 
 patch_vertex_ai_env()
 
@@ -84,7 +85,7 @@ app.add_middleware(
 # ========================================
 
 # 공통 API (헬스체크 등)
-app.include_router(api.router, prefix="/api")
+app.include_router(health.router, prefix="/api")
 
 # API routers
 app.include_router(auth.router, prefix="/api")
@@ -93,6 +94,7 @@ app.include_router(input.router, prefix="/api")
 app.include_router(output.router, prefix="/api")
 app.include_router(voice.router, prefix="/api")
 app.include_router(storage.router, prefix="/api")
+app.include_router(channel.router, prefix="/api")
 
 # Frontend (mobile only)
 APP_DIR = Path(__file__).resolve().parent

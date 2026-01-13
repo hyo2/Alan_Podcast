@@ -32,7 +32,6 @@ def list_channels() -> List[Channel]:
     return list(channels.values())
 
 
-
 # 세션 생성 (수정)
 def create_session(channel_id: str) -> Session:
     # 생성 시 channel_id를 필수로 인자에 넣습니다.
