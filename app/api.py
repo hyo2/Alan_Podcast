@@ -12,12 +12,17 @@ from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, UploadFile, File, Header, Path, Form, status, Query
 from fastapi.responses import FileResponse, JSONResponse
+from dotenv import load_dotenv  # 추가: 환경 변수 로드를 위해 필요
 
 # 1. 수정된 위치(app/state.py) 및 관련 모듈 임포트
 from app.state import channels, sessions
 from app.models.session import Session
 from app.utils.response import success_response, error_response
 from app.utils.error_codes import ErrorCodes
+
+# [핵심 수정] api.py가 로드될 때 즉시 환경 파일을 읽도록 합니다.
+# 덮어쓰기(override=True) 옵션을 주면 기존에 잘못 로드된 None 값을 실제 값으로 갱신합니다.
+load_dotenv(".env.development", override=True)
 
 # 라우터 설정
 router = APIRouter(prefix="/api/v1", tags=["Internal API"])
@@ -29,40 +34,16 @@ print(f"🔑 로드된 토큰: [{INTERNAL_SERVICE_TOKEN}]") # 서버 켜질 때 
 def health_check():
     """
     서비스 상태 확인용 헬스체크 API
-    
-    **인증 불필요**
-    
-    Returns:
-        dict: 표준 응답 형식
-            - success (bool): 요청 성공 여부
-            - data (dict): 서비스 상태 정보
-                - status (str): 서비스 상태 (healthy)
-                - version (str): API 버전
-                - service (str): 서비스 이름
-    
-    Example:
-        ```
-        GET /api/v1/health
-        
-        Response (200 OK):
-        {
-            "success": true,
-            "data": {
-                "status": "healthy",
-                "version": "1.0.0",
-                "service": "ai-audiobook"
-            }
-        }
-        ```
+    [수정] 명세 [BE] A4-4에 따라 표준 응답 래퍼 적용
     """
-    return {
-        "success": True,
-        "data": {
-            "status": "healthy",
-            "version": "1.0.0",
-            "service": "ai-audiobook"
-        }
+    health_data = {
+        "status": "healthy",
+        "version": "1.0.0",
+        "service": "ai-audiobook"
     }
+    # 기존: return {"success": True, "data": health_data}
+    # 변경: 표준 래퍼 사용
+    return success_response(data=health_data)
 
 # --- [BE] A2-3: 세션 생성 ---
 @router.post("/channels/{channel_id}/sessions", status_code=status.HTTP_201_CREATED)
@@ -114,7 +95,9 @@ async def create_session(
             "status": "processing",
             "progress": 0,
             "current_step": "파일 업로드 완료",
-            "created_at": new_session.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") # ISO 8601 형식
+            "result": None,  # 초기 생성이므로 null
+            "error": None,   # 초기 생성이므로 null
+            "created_at": new_session.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
         }
         
         # 전역 상태 저장 (In-memory DB)
@@ -187,6 +170,72 @@ async def list_sessions(
         }
     )    
 
+@router.get("/channels/{channel_id}/sessions/{session_id}")
+async def get_session_detail(
+    channel_id: str = Path(..., description="채널 ID"),
+    session_id: str = Path(..., description="조회할 세션 ID"),
+    x_internal_service_token: Optional[str] = Header(None, alias="X-Internal-Service-Token")
+):
+    """
+    [BE] A2-4: 개별 세션의 상세 정보 및 진행 상태를 조회합니다.
+    
+    - 세션의 현재 처리 단계(current_step)와 진행률(progress)을 확인합니다.
+    - 완료(completed) 시 생성된 결과물 정보를 포함합니다.
+    - 실패(failed) 시 에러 메시지를 포함합니다.
+    """
+    # 1. 인증 검증
+    if x_internal_service_token != INTERNAL_SERVICE_TOKEN:
+        return error_response(
+            message="인증 토큰이 없거나 유효하지 않습니다.",
+            error_code=ErrorCodes.UNAUTHORIZED,
+            status_code=401
+        )
+
+    # 2. 채널 존재 여부 확인
+    if channel_id not in channels:
+        return error_response(
+            message="요청하신 채널을 찾을 수 없습니다.",
+            error_code=ErrorCodes.CHANNEL_NOT_FOUND,
+            status_code=404
+        )
+
+    # 3. 세션 존재 여부 확인
+    if session_id not in sessions:
+        return error_response(
+            message="요청하신 세션 정보를 찾을 수 없습니다.",
+            error_code=ErrorCodes.SESSION_NOT_FOUND,
+            status_code=404
+        )
+
+    # 4. 세션 데이터 추출
+    session_obj = sessions[session_id]
+    
+    # 보안 체크: 해당 세션이 요청된 채널에 속해 있는지 확인
+    if session_obj.channel_id != channel_id:
+        return error_response(
+            message="해당 채널에 권한이 없는 세션입니다.",
+            error_code=ErrorCodes.UNAUTHORIZED,
+            status_code=403
+        )
+
+    # 5. 상태별 결과 데이터 구성
+    # getattr을 사용하여 모델 확장 시에도 안전하게 기본값을 처리합니다.
+    session_status = getattr(session_obj, 'status', 'processing')
+    
+    session_data = {
+        "session_id": session_obj.session_id,
+        "status": session_status,
+        "progress": getattr(session_obj, 'progress', 0),
+        "current_step": getattr(session_obj, 'current_step', '처리 대기 중'),
+        "result": getattr(session_obj, 'result', None) if session_status == 'completed' else None,
+        "error": getattr(session_obj, 'error', None) if session_status == 'failed' else None,
+        "created_at": session_obj.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    }
+
+    # 6. 성공 응답 반환
+    return success_response(
+        data=session_data
+    )
 
 @router.delete("/channels/{channel_id}/sessions/{session_id}")
 async def delete_session(
@@ -223,11 +272,14 @@ async def delete_session(
 
     try:
         # 4. 🔥 파일 삭제 로직 (명세 핵심 요구사항)
-        # 생성 API에서 파일을 저장하는 경로 규칙에 맞춰 작성해야 합니다.
-        file_path = os.path.join("outputs", "podcasts", "wav", f"{session_id}.wav")
-        if os.path.exists(file_path):
-            os.remove(file_path)
-            print(f"✅ 파일 삭제 완료: {file_path}")
+        storage_path = os.path.join("outputs", "podcasts", "wav")
+        if os.path.exists(storage_path):
+            # 해당 세션 ID로 시작하는 모든 파일(.wav, .mp3 등)을 찾아 삭제합니다.
+            for filename in os.listdir(storage_path):
+                if filename.startswith(session_id):
+                    file_path = os.path.join(storage_path, filename)
+                    os.remove(file_path)
+                    print(f"✅ 파일 삭제 완료: {file_path}")
 
         # 5. 메모리 데이터 삭제
         del sessions[session_id]
@@ -251,7 +303,7 @@ async def delete_session(
 async def stream_audio(
     channel_id: str = Path(..., description="채널 ID"),
     session_id: str = Path(..., description="세션 ID"),
-    chapter: int = Path(..., description="챕터 번호"),
+    chapter: int = Path(..., description="챕터 번호 (1부터 시작)"), # 1. int 타입으로 문자열은 자동 차단
     x_internal_service_token: Optional[str] = Header(None, alias="X-Internal-Service-Token")
 ):
     """
@@ -281,20 +333,38 @@ async def stream_audio(
 
     # 3. 세션 상태 확인 (completed 상태만 허용)
     session_obj = sessions[session_id]
+    session_status = getattr(session_obj, 'status', 'processing')
+
+    # [추가] 챕터 번호 유효성 확인 (비즈니스 로직)
+    if chapter < 1:
+        return error_response(
+            message="챕터 번호는 1보다 커야 합니다.",
+            error_code=ErrorCodes.INVALID_PARAMETER, # 혹은 적절한 에러코드
+            status_code=400
+        )
+
+    if session_status != 'completed':
+        return error_response(
+            message="오디오 처리가 아직 완료되지 않았습니다.",
+            error_code=ErrorCodes.PROCESSING_FAILED, # 명세서 요구사항 400 에러
+            status_code=400
+        )
 
     # 4. 오디오 파일 경로 구성
+    # 실제 파일은 outputs/podcasts/wav 폴더에 저장.
     file_path = os.path.join("outputs", "podcasts", "wav", f"{session_id}_ch{chapter}.wav")
 
     # 5. 챕터 파일 존재 여부 확인
     if not os.path.exists(file_path):
         return error_response(
-            message="챕터 파일을 찾을 수 없습니다.", 
+            message="해당 챕터의 오디오 파일을 찾을 수 없습니다.", 
             error_code=ErrorCodes.NOT_FOUND, 
             status_code=404)
 
     # 6. 스트리밍 응답 반환 (FastAPI가 Range 요청을 자동으로 처리함)
+    # FileResponse는 FastAPI가 내부적으로 Range 요청(Partial Content)을 지원해줍니다.
     return FileResponse(
         path=file_path,
-        media_type="audio/mpeg", # 명세서 요구사항
+        media_type="audio/mpeg", 
         filename=f"chapter_{chapter}.mp3"
     )
