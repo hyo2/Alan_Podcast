@@ -1,3 +1,10 @@
+"""
+공통 API 엔드포인트
+- 헬스체크
+- 서비스 정보 등
+- [사용자 추가] 오디오북 세션 관리 및 스트리밍 로직 포함
+"""
+
 import uuid
 import os
 import shutil
@@ -12,9 +19,50 @@ from app.models.session import Session
 from app.utils.response import success_response, error_response
 from app.utils.error_codes import ErrorCodes
 
+# 라우터 설정
 router = APIRouter(prefix="/api/v1", tags=["Internal API"])
+
 INTERNAL_SERVICE_TOKEN = os.getenv("INTERNAL_SERVICE_TOKEN")
 print(f"🔑 로드된 토큰: [{INTERNAL_SERVICE_TOKEN}]") # 서버 켜질 때 로그 확인용
+
+@router.get("/health", tags=["Common"])
+def health_check():
+    """
+    서비스 상태 확인용 헬스체크 API
+    
+    **인증 불필요**
+    
+    Returns:
+        dict: 표준 응답 형식
+            - success (bool): 요청 성공 여부
+            - data (dict): 서비스 상태 정보
+                - status (str): 서비스 상태 (healthy)
+                - version (str): API 버전
+                - service (str): 서비스 이름
+    
+    Example:
+        ```
+        GET /api/v1/health
+        
+        Response (200 OK):
+        {
+            "success": true,
+            "data": {
+                "status": "healthy",
+                "version": "1.0.0",
+                "service": "ai-audiobook"
+            }
+        }
+        ```
+    """
+    return {
+        "success": True,
+        "data": {
+            "status": "healthy",
+            "version": "1.0.0",
+            "service": "ai-audiobook"
+        }
+    }
 
 # --- [BE] A2-3: 세션 생성 ---
 @router.post("/channels/{channel_id}/sessions", status_code=status.HTTP_201_CREATED)
@@ -176,7 +224,6 @@ async def delete_session(
     try:
         # 4. 🔥 파일 삭제 로직 (명세 핵심 요구사항)
         # 생성 API에서 파일을 저장하는 경로 규칙에 맞춰 작성해야 합니다.
-        # 예: outputs/podcasts/wav/{session_id}.wav
         file_path = os.path.join("outputs", "podcasts", "wav", f"{session_id}.wav")
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -234,14 +281,8 @@ async def stream_audio(
 
     # 3. 세션 상태 확인 (completed 상태만 허용)
     session_obj = sessions[session_id]
-    # 실제 구현 시에는 session_obj.status 등을 확인해야 합니다.
-    # 지금은 테스트를 위해 간단히 체크 로직만 구성합니다.
-    # if session_obj.status != "completed":
-    #    return error_response(message="처리 미완료", error_code="PROCESSING_FAILED", status_code=400)
 
     # 4. 오디오 파일 경로 구성
-    # 예: outputs/podcasts/wav/{session_id}_ch{chapter}.wav (또는 .mp3)
-    # 사용자님의 실제 파일 저장 규칙에 맞춰 수정이 필요할 수 있습니다.
     file_path = os.path.join("outputs", "podcasts", "wav", f"{session_id}_ch{chapter}.wav")
 
     # 5. 챕터 파일 존재 여부 확인
