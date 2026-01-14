@@ -1,5 +1,5 @@
 # 응답 유틸리티 함수
-# backend/utils/response.py
+# backend/app/utils/response.py
 
 from typing import Any, Optional, Dict, Tuple
 

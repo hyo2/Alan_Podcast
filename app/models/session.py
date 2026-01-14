@@ -1,4 +1,4 @@
-# backend/models/Session.py
+# backend/app/models/session.py
 # session.py 모델에 붙임.
 
 
@@ -13,6 +13,6 @@ def generate_session_id() -> str:
 
 @dataclass
 class Session:
-    session_id: str = field(default_factory=generate_session_id)
     channel_id: str  # 필수로 설정
+    session_id: str = field(default_factory=generate_session_id)
     created_at: datetime = field(default_factory=datetime.utcnow)

@@ -132,6 +132,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.env*
 
 # Spyder project settings
 .spyderproject
@@ -167,3 +168,6 @@ uv.lock
 .langgraph_api/
 
 .vscode/
+
+# vertex-ai-service-account.json
+vertex-ai-service-account.json

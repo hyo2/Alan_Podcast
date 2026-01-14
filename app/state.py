@@ -1,8 +1,8 @@
-# backend/state.py
+# backend/app/state.py
 
 from typing import Dict, List
-from models.channel import Channel
-from models.session import Session
+from app.models.channel import Channel
+from app.models.session import Session
 
 
 # 저장소 추가
@@ -49,3 +49,9 @@ def list_sessions(channel_id: str = None) -> List[Session]:
     if channel_id:
         return [s for s in sessions.values() if getattr(s, 'channel_id', None) == channel_id]
     return list(sessions.values())
+
+
+# 테스트용 기본 채널 미리 생성
+test_channel = Channel()
+test_channel.channel_id = "ch_default" # ID를 강제로 고정
+channels["ch_default"] = test_channel

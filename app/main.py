@@ -8,6 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi import HTTPException
+from app.api import router as api_router
+
+app = FastAPI()
+
 import os
 
 from app.routers import auth, input, output, project, storage, voice
@@ -95,3 +99,5 @@ def serve_mobile():
 @app.get("/mobile/{path:path}")
 def serve_mobile_spa(path: str):
     return FileResponse("app/static/index.html")
+
+app.include_router(api_router)

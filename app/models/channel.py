@@ -1,4 +1,4 @@
-# backend/models/channel.py
+# backend/app/models/channel.py
 
 from dataclasses import dataclass, field
 from datetime import datetime
