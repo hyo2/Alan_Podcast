@@ -176,3 +176,7 @@ uv.lock
 
 # vertex-ai-service-account.json
 vertex-ai-service-account.json
+
+# local folders (do not commit)
+ai_audiobook/
+test/
