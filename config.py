@@ -24,7 +24,7 @@ class Settings:
         # 환경 감지
         self.environment = self._get_environment()
         
-        # 환경별 .env 파일 로드
+        # 환경별 .env 파일 로드 (os.environ 채우기)
         self._load_env_file()
         
         # 내부 서비스 토큰 환경변수 로드
@@ -42,11 +42,29 @@ class Settings:
         
         # CORS 설정
         self.cors_origins = os.getenv("CORS_ORIGINS", "")
+
+        # 백엔드 모드 선택
+        self.repo_backend = os.getenv("REPO_BACKEND", "memory").lower().strip()      # memory | postgres
+        self.storage_backend = os.getenv("STORAGE_BACKEND", "local").lower().strip()  # local | azure
+
+        # DB 설정 (postgres 모드면 필수)
+        self.database_url = os.getenv("DATABASE_URL", "")
+        if self.repo_backend == "postgres":
+            self.database_url = self._get_required("DATABASE_URL")
+
+        # Azure Storage 설정 (azure 모드면 필수)
+        self.azure_storage_connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "")
+        self.azure_storage_container = os.getenv("AZURE_STORAGE_CONTAINER", "")
+        if self.storage_backend == "azure":
+            self.azure_storage_connection_string = self._get_required("AZURE_STORAGE_CONNECTION_STRING")
+            self.azure_storage_container = self._get_required("AZURE_STORAGE_CONTAINER")
         
         # 설정 로드 완료 로그
         print(f"⚙️  환경 설정 로드 완료: {self.environment}")
         print(f"   - 포트: {self.port}")
         print(f"   - 로그 레벨: {self.log_level}")
+        print(f"   - REPO_BACKEND: {self.repo_backend}")
+        print(f"   - STORAGE_BACKEND: {self.storage_backend}")
     
     def _get_environment(self) -> str:
         """
@@ -58,7 +76,6 @@ class Settings:
         env = (
             os.getenv("ENVIRONMENT")
             or os.getenv("APP_ENV")
-            or os.getenv("RAILWAY_ENVIRONMENT")
             or "development"
         ).lower()
         
@@ -117,9 +134,7 @@ class Settings:
                         elif value.startswith("'") and value.endswith("'"):
                             value = value[1:-1]
                         
-                        # 환경변수가 없을 때만 설정 (기존 환경변수 우선)
-                        if key not in os.environ:
-                            os.environ[key] = value
+                        os.environ[key] = value
         except Exception as e:
             print(f"⚠️  환경 파일 로드 실패: {e}")
     
@@ -165,6 +180,8 @@ class Settings:
             f"  environment={self.environment}\n"
             f"  port={self.port}\n"
             f"  log_level={self.log_level}\n"
+            f"  repo_backend={self.repo_backend}\n"
+            f"  storage_backend={self.storage_backend}\n"
             f"  cors_origins={self.cors_origins or '(not set)'}\n"
             f")"
         )

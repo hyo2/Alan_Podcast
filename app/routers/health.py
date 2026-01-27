@@ -8,9 +8,9 @@
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from utils.response import success_response  # ✅ 표준 래퍼
+from app.utils.response import success_response  # ✅ 표준 래퍼
 
-router = APIRouter(tags=["Common"])
+router = APIRouter(tags=["common_health_check"])
 
 @router.get("/v1/health")
 def health_check():

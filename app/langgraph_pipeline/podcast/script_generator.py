@@ -8,10 +8,9 @@ from google.oauth2 import service_account
 from vertexai.generative_models import GenerativeModel
 import vertexai
  
-# [Supabase] 프로젝트 구조에 맞춰 임포트
-from app.services.supabase_service import supabase
+from sqlalchemy.orm import Session
 from .prompt_service import PromptTemplateService
- 
+
 logger = logging.getLogger(__name__)
  
  
@@ -46,15 +45,16 @@ def _extract_title_fallback(text: str) -> str | None:
     return None
  
 class ScriptGenerator:
-    """LLM을 사용한 팟캐스트 스크립트 생성 (Supabase + Vertex AI)"""
+    """LLM을 사용한 팟캐스트 스크립트 생성 (PostgreSQL + Vertex AI)"""
    
-    def __init__(self, project_id: str, region: str, sa_file: str, style: str = "explain"):
+    # ✅ db Session을 생성자에서 받도록 변경
+    def __init__(self, db: Session, project_id: str, region: str, sa_file: str, style: str = "explain"):
+        self.db = db
         self.project_id = project_id
         self.region = region
         self.sa_file = sa_file
         self.style = style
-       
-        # 초기화 실행
+
         self._init_vertex_ai()
         self._load_prompt_template()
    
@@ -91,25 +91,22 @@ class ScriptGenerator:
             return None
    
     def _load_prompt_template(self):
-        """프롬프트 템플릿 로드 (Supabase 연동)"""
+        """프롬프트 템플릿 로드 (PostgreSQL 연동)"""
         try:
-            # Supabase 클라이언트를 전달하여 템플릿 조회
-            template = PromptTemplateService.get_template(supabase, self.style)
-           
+            template = PromptTemplateService.get_template(self.db, self.style)
+
             if template:
                 self.system_prompt = template["system_prompt"]
                 self.user_prompt_template = template["user_prompt_template"]
                 logger.info(f"프롬프트 템플릿 로드 성공: {template['style_name']}")
             else:
                 logger.warning(f"템플릿을 찾을 수 없어 기본 템플릿 사용: {self.style}")
-                # 기본 템플릿 폴백
-                default_template = PromptTemplateService.get_default_template(supabase)
+                default_template = PromptTemplateService.get_default_template(self.db)
                 self.system_prompt = default_template["system_prompt"]
                 self.user_prompt_template = default_template["user_prompt_template"]
-               
+
         except Exception as e:
             logger.error(f"템플릿 로드 중 오류 발생: {e}")
-            # 최후의 수단: 하드코딩 폴백
             self.system_prompt = "You are a teacher. Respond in Korean."
             self.user_prompt_template = "Create a dialogue in Korean:\n{combined_text}"
  

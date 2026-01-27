@@ -16,7 +16,6 @@ from .audio_processor import AudioProcessor
 
 logger = logging.getLogger(__name__)
 
-
 def get_temp_output_dir() -> str:
     """환경에 맞는 임시 출력 디렉토리 반환"""
     base = os.getenv("BASE_OUTPUT_DIR", "outputs")
@@ -135,22 +134,28 @@ def generate_script_node(state: PodcastState) -> PodcastState:
     """노드 3: 스크립트 생성"""
     logger.info("스크립트 생성 중...")
     try:
-        generator = ScriptGenerator(
-            project_id=state['project_id'],
-            region=state['region'],
-            sa_file=state['sa_file'],
-            style=state.get('style', 'explain')
-        )
-        
-        #  [수정] difficulty 파라미터 전달 추가
-        result = generator.generate_script(
-            combined_text=state['combined_text'],
-            host_name=state['host_name'],
-            guest_name=state['guest_name'],
-            duration=state.get('duration', 5),
-            difficulty=state.get('difficulty', 'intermediate'), # <--- 여기 추가됨
-            user_prompt=state.get('user_prompt', "")
-        )
+        from app.db.db_session import SessionLocal
+        if SessionLocal is None:
+            raise RuntimeError("DB session factory(SessionLocal)가 없습니다. DATABASE_URL 설정을 확인하세요.")
+        db = SessionLocal()
+        try:
+            generator = ScriptGenerator(
+                db=db,
+                project_id=state['project_id'],
+                region=state['region'],
+                sa_file=state['sa_file'],
+                style=state.get('style', 'explain')
+            )
+            result = generator.generate_script(
+                combined_text=state['combined_text'],
+                host_name=state['host_name'],
+                guest_name=state['guest_name'],
+                duration=state.get('duration', 5),
+                difficulty=state.get('difficulty', 'intermediate'),
+                user_prompt=state.get('user_prompt', "")
+            )
+        finally:
+            db.close()
         
         new_usage = state.get("usage", {})
         if "usage" in result:
@@ -205,11 +210,42 @@ def generate_transcript_node(state: PodcastState) -> PodcastState:
         logger.error(f"트랜스크립트 오류: {e}")
         return {**state, "errors": state.get('errors', []) + [str(e)], "current_step": "error"}
 
+def _should_end(state: PodcastState) -> bool:
+    # errors가 있거나 current_step이 error면 즉시 중단
+    if state.get("current_step") == "error":
+        return True
+    errs = state.get("errors") or []
+    return len(errs) > 0
+
+
+def _route_after_extract(state: PodcastState):
+    return END if _should_end(state) else "combine_texts"
+
+
+def _route_after_combine(state: PodcastState):
+    return END if _should_end(state) else "generate_script"
+
+
+def _route_after_script(state: PodcastState):
+    return END if _should_end(state) else "generate_audio"
+
+
+def _route_after_audio(state: PodcastState):
+    return END if _should_end(state) else "merge_audio"
+
+
+def _route_after_merge(state: PodcastState):
+    return END if _should_end(state) else "generate_transcript"
+
+
+def _route_after_transcript(state: PodcastState):
+    return END  # 마지막은 무조건 종료
+
 
 def create_podcast_graph():
-    """LangGraph 그래프 정의"""
+    """LangGraph 그래프 정의 (에러 발생 시 즉시 종료)"""
     workflow = StateGraph(PodcastState)
-    
+
     workflow.add_node("extract_texts", extract_texts_node)
     workflow.add_node("combine_texts", combine_texts_node)
     workflow.add_node("generate_script", generate_script_node)
@@ -218,12 +254,14 @@ def create_podcast_graph():
     workflow.add_node("generate_transcript", generate_transcript_node)
 
     workflow.set_entry_point("extract_texts")
-    workflow.add_edge("extract_texts", "combine_texts")
-    workflow.add_edge("combine_texts", "generate_script")
-    workflow.add_edge("generate_script", "generate_audio")
-    workflow.add_edge("generate_audio", "merge_audio")
-    workflow.add_edge("merge_audio", "generate_transcript")
-    workflow.add_edge("generate_transcript", END)
+
+    # ✅ 단계별 conditional routing
+    workflow.add_conditional_edges("extract_texts", _route_after_extract)
+    workflow.add_conditional_edges("combine_texts", _route_after_combine)
+    workflow.add_conditional_edges("generate_script", _route_after_script)
+    workflow.add_conditional_edges("generate_audio", _route_after_audio)
+    workflow.add_conditional_edges("merge_audio", _route_after_merge)
+    workflow.add_conditional_edges("generate_transcript", _route_after_transcript)
 
     return workflow.compile(checkpointer=MemorySaver())
 

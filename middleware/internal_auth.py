@@ -3,78 +3,57 @@
 """
 
 from typing import Callable
-from fastapi import Request, Response, status
+import os
+
+from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-import os
+
+from app.utils.error_codes import ErrorCodes
+from app.utils.response import error_response
 
 
 class InternalAuthMiddleware(BaseHTTPMiddleware):
     """
-    내부 서비스 요청을 인증하기 위한 미들웨어
-    
-    -요청 헤더의 X-Internal-Service-Token 값 확인
-    - 환경 변수(INTERNAL_SERVICE_TOKEN)과 비교해 인증
+    내부 서비스 요청 인증 미들웨어
+
+    - 요청 헤더의 X-Internal-Service-Token 값을 검사
+    - 환경변수 INTERNAL_SERVICE_TOKEN과 일치하면 통과
+    - 실패 시 공통 error_response 스펙으로 401 반환
     """
-    
-    def __init__(self, app, exclude_paths: list[str] = None):
+
+    def __init__(self, app, exclude_paths: list[str] | None = None):
         super().__init__(app)
+        # 내부 토큰은 환경변수에서 읽는다.
         self.internal_token = os.getenv("INTERNAL_SERVICE_TOKEN")
         self.exclude_paths = exclude_paths or []
-        
-    async def dispatch(
-        self, request: Request, call_next: Callable
-    ) -> Response:
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """
         요청 처리 및 내부 서비스 토큰 검증
-        
-        Args:
-            request: 들어오는 요청 객체
-            call_next: 다음 미들웨어 또는 라우트 핸들러
-            
-        Returns:
-            다음 핸들러의 응답 또는 401 에러 응답
+        통과하면 다음 핸들러로 넘김
         """
-        # exclude_paths에 해당하면 인증 건너뜀
-        if any(request.url.path.startswith(path) for path in self.exclude_paths):
+        path = request.url.path
+
+        # 1) 제외 경로는 인증 검사 없이 통과
+        #    (예: /docs, /openapi.json, /health 등)
+        if any(path.startswith(p) for p in self.exclude_paths):
             return await call_next(request)
-        
-        # 요청 헤더에서 토큰 추출
+
+        # 2) 헤더에서 토큰 추출
         token = request.headers.get("X-Internal-Service-Token")
-        
-        # 토큰 검증
-        if not self._validate_token(token):
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={
-                    "success": False,
-                    "data": None,
-                    "message": "Invalid or missing authentication token",
-                    "error_code": "UNAUTHORIZED"
-                }
+
+        # 3) 토큰 검증
+        #    - 토큰이 없거나
+        #    - 환경변수 토큰이 비어있거나
+        #    - 값이 일치하지 않으면 401
+        if not token or not self.internal_token or token != self.internal_token:
+            body, status_code = error_response(
+                message="Invalid or missing authentication token",
+                error_code=ErrorCodes.UNAUTHORIZED,
+                status_code=401
             )
-        
-        # 검증 성공 시 다음 핸들러로
-        response = await call_next(request)
-        return response
-    
-    def _validate_token(self, token: str | None) -> bool:
-        """
-        내부 서비스 토큰 검증
-        
-        Args:
-            token: 요청 헤더에서 추출한 토큰
-            
-        Returns:
-            유효하면 True, 아니면 Fasle
-        """
-        # 1. 환경변수가 설정되지 않은 경우
-        if not self.internal_token:
-            return False
-        
-        # 2. 헤더에 토큰이 없는 경우
-        if not token:
-            return False
-        
-        # 3. 토큰 비교 (단순 문자열 비교)
-        return token == self.internal_token
+            return JSONResponse(status_code=status_code, content=body)
+
+        # 4) 통과 시 다음 핸들러 실행
+        return await call_next(request)
