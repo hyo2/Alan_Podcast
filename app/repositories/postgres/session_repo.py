@@ -21,26 +21,30 @@ class PostgresSessionRepo:
         current_step: str | None = None,
         error_message: str | None = None,
         title: str | None = None, 
+        total_duration_sec: int | None = None,
+        script_text: str | None = None,
     ) -> Dict:
         session_id = f"sess_{uuid.uuid4()}"  # 내부 생성
         q = text("""
             INSERT INTO sessions (
                 session_id, channel_id, options, storage_prefix, audio_key, script_key,
-                status, current_step, error_message, title
+                status, current_step, error_message, title,
+                total_duration_sec, script_text
             )
             VALUES (
                 :session_id, :channel_id, :options, :storage_prefix, :audio_key, :script_key,
-                :status, :current_step, :error_message, :title
+                :status, :current_step, :error_message, :title, :total_duration_sec, :script_text
             )
             RETURNING
                 session_id, channel_id, created_at, options,
                 storage_prefix, audio_key, script_key,
-                status, current_step, error_message, title
+                status, current_step, error_message, title,
+                total_duration_sec, script_text
         """)
         row = self.db.execute(q, {
             "session_id": session_id,
             "channel_id": channel_id,
-            "options": json.dumps(options) if options else None,
+            "options": json.dumps(options) if options is not None else None,
             "storage_prefix": storage_prefix,
             "audio_key": audio_key,
             "script_key": script_key,
@@ -48,6 +52,8 @@ class PostgresSessionRepo:
             "current_step": current_step,
             "error_message": error_message,
             "title": title,  
+            "total_duration_sec": total_duration_sec,
+            "script_text": script_text,
         }).mappings().one()
         self.db.commit()
         
@@ -62,7 +68,8 @@ class PostgresSessionRepo:
             SELECT
                 session_id, channel_id, created_at, options,
                 storage_prefix, audio_key, script_key,
-                status, current_step, error_message, title
+                status, current_step, error_message, title,
+                total_duration_sec, script_text
             FROM sessions
             WHERE session_id = :session_id
         """)
@@ -81,7 +88,8 @@ class PostgresSessionRepo:
             SELECT
                 session_id, channel_id, created_at, options,
                 storage_prefix, audio_key, script_key,
-                status, current_step, error_message, title
+                status, current_step, error_message, title,
+                total_duration_sec, script_text
             FROM sessions
             WHERE channel_id = :channel_id
             ORDER BY created_at DESC
@@ -109,6 +117,8 @@ class PostgresSessionRepo:
         script_key: str | None = None,
         title: str | None = None,
         options: dict | None = None,
+        total_duration_sec: int | None = None,
+        script_text: str | None = None,
     ) -> Optional[Dict]:
         q = text("""
             UPDATE sessions
@@ -120,12 +130,15 @@ class PostgresSessionRepo:
                 audio_key = COALESCE(:audio_key, audio_key),
                 script_key = COALESCE(:script_key, script_key),
                 options = COALESCE(:options, options),
-                title = COALESCE(:title, title)
+                title = COALESCE(:title, title),
+                total_duration_sec = COALESCE(:total_duration_sec, total_duration_sec),
+                script_text = COALESCE(:script_text, script_text)
             WHERE session_id = :session_id
             RETURNING
                 session_id, channel_id, created_at, options,
                 storage_prefix, audio_key, script_key,
-                status, current_step, error_message, title
+                status, current_step, error_message, title,
+                total_duration_sec, script_text
         """)
         row = self.db.execute(q, {
             "session_id": session_id,
@@ -135,8 +148,10 @@ class PostgresSessionRepo:
             "storage_prefix": storage_prefix,
             "audio_key": audio_key,
             "script_key": script_key,
-            "options": json.dumps(options) if options else None,
+            "options": json.dumps(options) if options is not None else None,
             "title": title,
+            "total_duration_sec": total_duration_sec,
+            "script_text": script_text,
         }).mappings().one_or_none()
         self.db.commit()
         

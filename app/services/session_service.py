@@ -4,6 +4,7 @@ import tempfile
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
+from pydub import AudioSegment
 
 from app.services.langgraph_service import run_langgraph, CancelledException
 from app.utils.session_helpers import session_exists
@@ -11,6 +12,9 @@ from app.utils.error_codes import ErrorCodes
 
 logger = logging.getLogger(__name__)
 
+def get_audio_duration_sec(path: str) -> int:
+    audio = AudioSegment.from_file(path)
+    return int(len(audio) / 1000)
 
 class SessionService:
     def __init__(self, channel_repo, session_repo, session_input_repo, storage):
@@ -162,13 +166,11 @@ class SessionService:
 
             # Step 5: step_callback 정의
             def step_callback(step: str):
-                session = self.session_repo.get_session(session_id)
-                if session:
-                    self.session_repo.update_session_fields(
-                        session_id, 
-                        current_step=step
-                    )
-                    logger.info(f"📍 Step updated: {step}")
+                # ✅ 삭제됐으면 step 업데이트도 스킵
+                if not session_exists(self.session_repo, session_id):
+                    return
+                self.session_repo.update_session_fields(session_id, current_step=step)
+                logger.info(f"📍 Step updated: {step}")
 
             # Step 6: LangGraph 실행
             try:
@@ -184,8 +186,10 @@ class SessionService:
                     duration=options.get("duration", 5),
                     difficulty=options.get("difficulty", "intermediate"),
                     user_prompt=options.get("user_prompt", ""),
-                    output_id=None,  # session_id 사용하지 않음 (삭제 체크는 step_callback에서)
-                    step_callback=step_callback
+                    step_callback=step_callback,
+
+                    cancel_check=lambda: not session_exists(self.session_repo, session_id),
+                    thread_id=f"session_{session_id}",
                 )
             except CancelledException as ce:
                 logger.info(f"사용자가 session {session_id}를 취소함: {ce}")
@@ -234,6 +238,23 @@ class SessionService:
                 except:
                     pass
                 return
+            
+            total_duration_sec = None
+            try:
+                if audio_local and os.path.exists(audio_local):
+                    total_duration_sec = get_audio_duration_sec(audio_local)  # 초 단위로 리턴
+            except Exception as e:
+                logger.warning(f"오디오 길이 측정 실패: {e}")
+
+            script_text = None
+            try:
+                if script_local and os.path.exists(script_local):
+                    with open(script_local, "r", encoding="utf-8") as f:
+                        script_text = f.read()
+            except Exception as e:
+                logger.warning(f"Transcript 파일 읽기 실패: {e}")
+                # fallback: langgraph 결과에 script 키가 있으면 거기서라도
+                script_text = result.get("script") or None
 
             # Step 11: 세션 업데이트 (완료)
             self.session_repo.update_session_fields(
@@ -242,6 +263,8 @@ class SessionService:
                 status="completed",
                 audio_key=audio_key,
                 script_key=script_key,
+                script_text=script_text,                 
+                total_duration_sec=total_duration_sec,
                 current_step="completed",
             )
 

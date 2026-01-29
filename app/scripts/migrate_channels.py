@@ -7,12 +7,6 @@ from app.state import sessions, channels
 from app.models.channel import Channel
 
 def run_migration(dry_run: bool = False, rollback: bool = False):
-    # # --- 완료조건 테스트를 위한 임시 코드 시작 ---
-    # from backend.models.session import Session
-    # # channel_id가 없는 옛날 데이터 생성 시뮬레이션
-    # test_session = Session(channel_id=None) 
-    # sessions["test_old_session"] = test_session
-    # # --- 완료조건 테스트를 위한 임시 코드 끝 ---
     # 1. 기존 데이터 백업
     backup_sessions = copy.deepcopy(sessions)
     backup_channels = copy.deepcopy(channels)

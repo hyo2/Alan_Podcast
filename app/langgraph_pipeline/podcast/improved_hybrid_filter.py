@@ -1,39 +1,78 @@
 """
-Improved Hybrid Filter V3 (pdfplumber 전환)
-==============================================
+Improved Hybrid Filter V4
+==========================
 
-핵심 변경사항:
+V4 변경사항:
+- V2의 유연한 인증 로직 추가 (환경 변수 기반)
+- V3의 pdfplumber (MIT) 유지
+- 색상 복잡도 필터 유지
+- 인증 실패 시 graceful degradation
+
+핵심 기능:
 - PyMuPDF (AGPL) → pdfplumber (MIT) 전환
 - 라이선스 문제 해결
-- 색상 복잡도 필터 추가 (텍스트 상자 배경 제거)
-- 기존 v2 기능 모두 유지
-
-색상 복잡도 필터:
-- 단조로운 색상 (< 300개): 텍스트 상자 배경
-- 복잡한 색상 (>= 500개): 진짜 콘텐츠 (만화, 차트)
-- 텍스트 중첩 + 색상 복잡도 조합으로 정확도 향상
+- 색상 복잡도 필터 (텍스트 상자 배경 제거)
+- 환경 변수 기반 인증 (프로덕션 대응)
 """
 
 import os
-import vertexai
 import textwrap
 import json
 from dataclasses import dataclass
 from typing import List, Dict
 from pptx import Presentation
-from vertexai.generative_models import GenerativeModel, Part
+from vertexai.generative_models import Part
 import logging
 logger = logging.getLogger(__name__)
 
+def _resolve_vertex_sa_file() -> str | None:
+    # 프로젝트에서 쓰는 키 우선순위
+    # NOTE: VERTEX_AI_SERVICE_ACCOUNT_JSON(=JSON 문자열)은 main.py의 patch_vertex_ai_env()에서
+    # 파일로 변환 후 GOOGLE_APPLICATION_CREDENTIALS로 연결되므로 여기서는 "경로"만 확인한다.
+    for key in ("VERTEX_AI_SERVICE_ACCOUNT_FILE", "GOOGLE_APPLICATION_CREDENTIALS"):
+        p = os.getenv(key)
+        if p and os.path.exists(p):
+            return p
+    return None
 
-# [1] 인증 설정
-SERVICE_ACCOUNT_FILE = "vertex-ai-service-account.json"
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = SERVICE_ACCOUNT_FILE
-PROJECT_ID = "alan-document-lab" 
-vertexai.init(project=PROJECT_ID, location="us-central1")
+def get_vertex_text_model():
+    """
+    키워드 추출/이미지 판단(vision)에서 쓰는 Gemini 모델 lazy init.
+    - 인증 파일 없으면 None 반환 (로컬 데모에서 vision만 스킵 가능)
+    """
+    try:
+        sa_file = _resolve_vertex_sa_file()
+        if not sa_file:
+            logger.warning("ℹ️ Vertex 서비스 계정 파일이 없어 Gemini 호출을 스킵합니다.")
+            return None
 
-# [2] Gemini 2.5 Flash 모델 로드
-model = GenerativeModel("gemini-2.5-flash")
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = sa_file
+
+        import vertexai
+        from vertexai.generative_models import GenerativeModel
+
+        project_id = os.getenv("VERTEX_AI_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
+        location = os.getenv("VERTEX_AI_REGION", "us-central1")
+
+        if project_id:
+            vertexai.init(project=project_id, location=location)
+        else:
+            vertexai.init(location=location)
+
+        model_name = os.getenv("VERTEX_AI_MODEL_TEXT", "gemini-2.5-flash")
+        return GenerativeModel(model_name)
+
+    except Exception as e:
+        logger.exception(f"Vertex/Gemini 초기화 실패: {e}")
+        return None
+    
+model = None
+
+def get_global_model():
+    global model
+    if model is None:
+        model = get_vertex_text_model()
+    return model
 
 @dataclass
 class ImageMetadata:
@@ -566,6 +605,8 @@ class ImprovedHybridFilterPipeline:
         ]
         
         self.document_keywords = []
+        
+        self.model = get_global_model()
 
     def extract_keywords_from_document(self, file_path: str):
         """문서에서 자동으로 키워드 추출"""
@@ -615,8 +656,13 @@ class ImprovedHybridFilterPipeline:
 - JSON 형식: {{"keywords": ["키워드1", "키워드2", ...]}}
 """
         
+        if self.model is None:
+            print("   ⚠️ Gemini 모델 초기화 실패(인증 없음). 키워드 자동 추출 스킵.")
+            self.document_keywords = []
+            return
+
         try:
-            response = model.generate_content(prompt)
+            response = self.model.generate_content(prompt)
             text = response.text.strip()
             
             if "```json" in text:
@@ -662,6 +708,10 @@ class ImprovedHybridFilterPipeline:
         """AI Vision으로 2차 판단"""
         import time
         
+        
+        if self.model is None:
+            return "DISCARD: Gemini unavailable (no credentials)", 0, 0.0
+
         for attempt in range(max_retries):
             try:
                 image_part = Part.from_data(data=meta.image_bytes, mime_type="image/png")
@@ -688,7 +738,7 @@ class ImprovedHybridFilterPipeline:
 
 출력 형식: KEEP 또는 DISCARD로 시작 + 이유 (1-2문장)
 """
-                response = model.generate_content([image_part, prompt])
+                response = self.model.generate_content([image_part, prompt])
                 return response.text.strip()
                 
             except Exception as e:

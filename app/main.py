@@ -10,15 +10,12 @@ from fastapi import HTTPException
 from config import settings
 # print("DATABASE_URL (masked) =", os.getenv("DATABASE_URL", "")[:60])
 
-from app.routers import (
-    auth, channels, input, output, project, sessions,
-    storage, voice, health, streaming
-)
-from app.utils.vertex_env_patch import patch_vertex_ai_env
 from middleware.internal_auth import InternalAuthMiddleware
 from middleware.cors import setup_cors
 
-patch_vertex_ai_env()
+from app.routers import (
+    channels, sessions, health, streaming
+)
 
 app = FastAPI(
     title="ai-audiobook API",
@@ -72,12 +69,6 @@ app.add_middleware(
 app.include_router(health.router, prefix="/api")
 
 # API routers
-app.include_router(auth.router, prefix="/api")
-app.include_router(project.router, prefix="/api")
-app.include_router(input.router, prefix="/api")
-app.include_router(output.router, prefix="/api")
-app.include_router(voice.router, prefix="/api")
-app.include_router(storage.router, prefix="/api")
 app.include_router(channels.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
 app.include_router(streaming.router, prefix="/api")

@@ -68,6 +68,8 @@ class MemorySessionRepo:
         current_step: str | None = None,
         error_message: str | None = None,
         title: str | None = None,
+        total_duration_sec: int | None = None,
+        script_text: str | None = None,
     ) -> Dict[str, Any]:
         sess = self.st.create_session(
             channel_id=channel_id,
@@ -79,6 +81,8 @@ class MemorySessionRepo:
             current_step=current_step,
             error_message=error_message,
             title=title,
+            total_duration_sec=total_duration_sec,
+            script_text=script_text,
         )
         return {
             "session_id": sess.session_id,
@@ -92,6 +96,8 @@ class MemorySessionRepo:
             "current_step": sess.current_step,
             "error_message": sess.error_message,
             "title": sess.title,
+            "total_duration_sec": sess.total_duration_sec,
+            "script_text": sess.script_text,
         }
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
@@ -110,6 +116,8 @@ class MemorySessionRepo:
             "current_step": sess.current_step,
             "error_message": sess.error_message,
             "title": sess.title,
+            "total_duration_sec": sess.total_duration_sec,
+            "script_text": sess.script_text,
         }
 
     def list_sessions_by_channel(self, channel_id: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
@@ -127,6 +135,8 @@ class MemorySessionRepo:
                 "current_step": s.current_step,
                 "error_message": s.error_message,
                 "title": s.title,
+                "total_duration_sec": s.total_duration_sec,
+                "script_text": s.script_text,
             })
         return rows
 
@@ -142,6 +152,8 @@ class MemorySessionRepo:
         script_key: str | None = None,
         title: str | None = None,
         options: dict | None = None,
+        total_duration_sec: int | None = None,
+        script_text: str | None = None,
     ) -> Optional[Dict[str, Any]]:
         sess = self.st.update_session(
             session_id,
@@ -153,6 +165,8 @@ class MemorySessionRepo:
             script_key=script_key,
             options=options,
             title=title,
+            total_duration_sec=total_duration_sec,
+            script_text=script_text,
         )
         if not sess:
             return None
@@ -168,6 +182,8 @@ class MemorySessionRepo:
             "current_step": sess.current_step,
             "error_message": sess.error_message,
             "title": sess.title,
+            "total_duration_sec": sess.total_duration_sec,
+            "script_text": sess.script_text,
         }
 
     def delete_session(self, session_id: str) -> bool:
@@ -224,40 +240,25 @@ class MemorySessionInputRepo:
 # -----------------------------
 # Factory Dependencies
 # -----------------------------
-def get_channel_repo():
+def get_channel_repo(db=Depends(get_db)):
     backend = _backend()
     if backend == "postgres":
         from app.repositories.postgres.channel_repo import PostgresChannelRepo
-        db = next(get_db())
-        try:
-            yield PostgresChannelRepo(db)
-        finally:
-            db.close()
-    else:
-        yield MemoryChannelRepo()
+        return PostgresChannelRepo(db)
+    return MemoryChannelRepo()
 
 
-def get_session_repo():
+def get_session_repo(db=Depends(get_db)):
     backend = _backend()
     if backend == "postgres":
         from app.repositories.postgres.session_repo import PostgresSessionRepo
-        db = next(get_db())
-        try:
-            yield PostgresSessionRepo(db)
-        finally:
-            db.close()
-    else:
-        yield MemorySessionRepo()
+        return PostgresSessionRepo(db)
+    return MemorySessionRepo()
 
 
-def get_session_input_repo():
+def get_session_input_repo(db=Depends(get_db)):
     backend = _backend()
     if backend == "postgres":
         from app.repositories.postgres.session_input_repo import PostgresSessionInputRepo
-        db = next(get_db())
-        try:
-            yield PostgresSessionInputRepo(db)
-        finally:
-            db.close()
-    else:
-        yield MemorySessionInputRepo()
+        return PostgresSessionInputRepo(db)
+    return MemorySessionInputRepo()

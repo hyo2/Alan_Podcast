@@ -49,6 +49,8 @@ def create_session(
     current_step: str | None = None,
     error_message: str | None = None,
     title: str | None = None,
+    total_duration_sec: int | None = None,
+    script_text: str | None = None,
 ) -> Session:
     """세션 생성"""
     session = Session(
@@ -61,6 +63,8 @@ def create_session(
         current_step=current_step,
         error_message=error_message,
         title=title,
+        total_duration_sec=total_duration_sec,
+        script_text=script_text,
     )
     sessions[session.session_id] = session
     return session

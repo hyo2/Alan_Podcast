@@ -21,4 +21,6 @@ class Session:
     current_step: Optional[str] = None
     error_message: Optional[str] = None
     options: Optional[dict] = None
-    title: Optional[str] = None  # 마지막에 추가
+    title: Optional[str] = None
+    total_duration_sec: Optional[int] = None
+    script_text: Optional[str] = None

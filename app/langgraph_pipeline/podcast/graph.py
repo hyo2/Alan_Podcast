@@ -255,7 +255,7 @@ def create_podcast_graph():
 
     workflow.set_entry_point("extract_texts")
 
-    # ✅ 단계별 conditional routing
+    # 단계별 conditional routing
     workflow.add_conditional_edges("extract_texts", _route_after_extract)
     workflow.add_conditional_edges("combine_texts", _route_after_combine)
     workflow.add_conditional_edges("generate_script", _route_after_script)
@@ -276,7 +276,7 @@ def run_podcast_generation(
     guest_name: str = None,
     style: str = "explain",
     duration: int = 5,
-    difficulty: str = "intermediate", # [수정] 인자 추가됨!
+    difficulty: str = "intermediate",
     user_prompt: str = ""
 ) -> Dict[str, Any]:
     """팟캐스트 생성 메인 실행 함수"""
@@ -310,7 +310,7 @@ def run_podcast_generation(
         "guest_name": guest,
         "style": style,
         "duration": duration,
-        "difficulty": difficulty, #  [수정] State에 난이도 전달
+        "difficulty": difficulty,
         "user_prompt": user_prompt
     }
 

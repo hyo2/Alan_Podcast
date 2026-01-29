@@ -14,6 +14,8 @@ class SessionRepo(Protocol):
         current_step: str | None = None,
         error_message: str | None = None,
         title: str | None = None, 
+        total_duration_sec: int | None = None,
+        script_text: str | None = None,
     ) -> Dict: ...  # session_id 파라미터 제거
 
     def get_session(self, session_id: str) -> Optional[Dict]: ...
@@ -37,6 +39,8 @@ class SessionRepo(Protocol):
         script_key: str | None = None,
         title: str | None = None,
         options: dict | None = None,
+        total_duration_sec: int | None = None,
+        script_text: str | None = None,
     ) -> Optional[Dict]: ...
 
     def delete_session(self, session_id: str) -> bool: ...

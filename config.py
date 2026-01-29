@@ -30,10 +30,6 @@ class Settings:
         # 내부 서비스 토큰 환경변수 로드
         self.internal_service_token = self._get_required("INTERNAL_SERVICE_TOKEN")
         
-        # API 키 (선택) - 현재 프로젝트에서는 Vertex AI 사용 중
-        self.google_api_key = os.getenv("GOOGLE_API_KEY", "")
-        self.elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY", "")
-        
         # 서버 설정
         self.port = int(os.getenv("PORT", "4001"))
         
@@ -60,7 +56,7 @@ class Settings:
             self.azure_storage_container = self._get_required("AZURE_STORAGE_CONTAINER")
         
         # 설정 로드 완료 로그
-        print(f"⚙️  환경 설정 로드 완료: {self.environment}")
+        print(f"     환경 설정 로드 완료: {self.environment}")
         print(f"   - 포트: {self.port}")
         print(f"   - 로그 레벨: {self.log_level}")
         print(f"   - REPO_BACKEND: {self.repo_backend}")
@@ -101,13 +97,13 @@ class Settings:
         
         # 환경별 파일이 있으면 로드
         if env_file.exists():
-            print(f"📄 환경 파일 로드: {env_file}")
+            print(f"환경 파일 로드: {env_file}")
             self._load_dotenv(env_file)
         else:
             # 없으면 기본 .env 파일 사용
             default_env = backend_dir / ".env"
             if default_env.exists():
-                print(f"📄 기본 환경 파일 로드: {default_env}")
+                print(f"기본 환경 파일 로드: {default_env}")
                 self._load_dotenv(default_env)
     
     def _load_dotenv(self, filepath: Path) -> None:
@@ -136,7 +132,7 @@ class Settings:
                         
                         os.environ[key] = value
         except Exception as e:
-            print(f"⚠️  환경 파일 로드 실패: {e}")
+            print(f"환경 파일 로드 실패: {e}")
     
     def _get_required(self, key: str) -> str:
         """
@@ -154,7 +150,7 @@ class Settings:
         value = os.getenv(key)
         if not value:
             raise ValueError(
-                f"❌ 필수 환경변수 누락: {key}\n"
+                f"필수 환경변수 누락: {key}\n"
                 f"   .env.{self.environment} 파일을 확인하세요."
             )
         return value

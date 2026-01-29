@@ -1,29 +1,53 @@
-# Python 3.13 베이스 이미지
-FROM python:3.13-slim
+# Azure Functions Python 3.11 베이스 이미지
+FROM mcr.microsoft.com/azure-functions/python:4-python3.11
 
-# 시스템 패키지 설치 (ffmpeg + libreoffice)
+# 작업 디렉토리 설정
+WORKDIR /home/site/wwwroot
+
+# UTF-8 환경 설정
+ENV PYTHONIOENCODING=utf-8
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+
+# Azure Functions 설정
+ENV AzureWebJobsScriptRoot=/home/site/wwwroot
+ENV AzureFunctionsJobHost__Logging__Console__IsEnabled=true
+
+# 시스템 패키지 설치 (ffmpeg + libreoffice 추가)
 RUN apt-get update && \
-    apt-get install -y \
+    apt-get install -y --no-install-recommends \
+        gcc \
+        g++ \
+        build-essential \
+        libpq-dev \
+        curl \
         ffmpeg \
         libreoffice \
         libreoffice-writer \
         libreoffice-calc \
         libreoffice-impress \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+        && apt-get clean \
+        && rm -rf /var/lib/apt/lists/*
 
-# 작업 디렉토리 설정
-WORKDIR /app
-
-# requirements 복사 및 설치
+# Python 의존성 파일만 먼저 복사
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-# 앱 코드 복사
+# Python 패키지 설치
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# 애플리케이션 코드 복사 (.dockerignore로 .python_packages 제외)
 COPY . .
 
-# 포트 노출
-EXPOSE 8000
+# .python_packages가 혹시 복사되었다면 삭제
+RUN rm -rf .python_packages .venv
 
-# 앱 실행 (Railway Settings와 동일하게 --proxy-headers 추가)
-CMD ["sh", "-c", "echo '===== FFMPEG BUILD CONF =====' && ffmpeg -buildconf && echo '===== FFMPEG LICENSE =====' && ffmpeg -L && uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers"]
+# 포트 노출
+EXPOSE 80
+
+# 헬스체크
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:80/api/v1/health || exit 1
+
+# Azure Functions 실행
+CMD [ "/azure-functions-host/Microsoft.Azure.WebJobs.Script.WebHost" ]

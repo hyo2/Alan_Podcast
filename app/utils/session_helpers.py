@@ -1,5 +1,7 @@
 # app/utils/session_helpers.py
 import logging
+from datetime import datetime, timezone
+from typing import Any, Dict, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -41,3 +43,22 @@ def to_seconds(time_str):
         return float(time_str)
 
     return int(h) * 3600 + int(m) * 60 + float(s)
+
+
+def to_iso_z(dt: datetime) -> str:
+    """datetime -> ISO 8601 (UTC, Z suffix)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+def unwrap_response_tuple(response: Any, result: Tuple[Dict[str, Any], int]) -> Dict[str, Any]:
+    """(body, status_code) 튜플을 FastAPI Response에 반영하고 body만 반환."""
+    body, status_code = result
+    try:
+        response.status_code = int(status_code)
+    except Exception:
+        response.status_code = 500
+    return body
