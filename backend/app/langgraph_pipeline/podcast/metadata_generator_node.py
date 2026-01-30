@@ -1,19 +1,25 @@
 """
-Metadata Generator Node
-=======================
+Metadata Generator Node (V2 - pdfplumber 전환)
+===============================================
+
+변경사항:
+- PyMuPDF 완전 제거
+- pdfplumber + OCR (pdf2image + PaddleOCR)로 통합
+- improved_hybrid_filter.py V3와 완전 호환
 
 입력:
 - primary_file: 주강의자료 (1개, 필수)
 - supplementary_files: 보조자료 (0~3개, 선택)
 
 출력:
-- metadata.json (이미지 설명 포함, 파일 저장 안 함)
+- metadata.json (이미지 설명 포함)
 
 통합:
 - DocumentConverterNode: PDF 변환 + TXT/URL 처리
 - ImprovedHybridFilterPipeline: 이미지 필터링
 - TextExtractor: 페이지별 텍스트 추출
 - ImageDescriptionGenerator: 이미지 상세 설명
+
 """
 
 import os
@@ -22,26 +28,38 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from datetime import datetime
+import logging
 
-# OCR 로그 억제 (import 전에 설정)
-os.environ['FLAGS_log_level'] = '3'  # PaddlePaddle 로그 레벨
-os.environ['PPOCR_SHOW_LOG'] = 'False'  # PaddleOCR 로그 억제
+logger = logging.getLogger(__name__)
 
+# OCR 로그 억제
+os.environ['FLAGS_log_level'] = '3'
+os.environ['PPOCR_SHOW_LOG'] = 'False'
+
+# pdfplumber (필수)
 try:
-    import fitz  # PyMuPDF
-    PYMUPDF_AVAILABLE = True
-except ImportError:
     import pdfplumber
-    PYMUPDF_AVAILABLE = False
+    PDFPLUMBER_AVAILABLE = True
+except ImportError:
+    print("❌ pdfplumber가 설치되지 않았습니다.")
+    print("   pip install pdfplumber")
+    PDFPLUMBER_AVAILABLE = False
 
-# OCR 라이브러리
+# OCR 라이브러리 (선택)
 try:
     from paddleocr import PaddleOCR
+    from pdf2image import convert_from_path
+    import numpy as np
+    from PIL import Image
+    from io import BytesIO
+    
     OCR_AVAILABLE = True
     ocr_engine = PaddleOCR(lang='korean', use_textline_orientation=True)
+    print("✅ OCR 엔진 초기화 완료 (PaddleOCR)")
 except ImportError:
     OCR_AVAILABLE = False
     ocr_engine = None
+    print("⚠️  OCR 라이브러리 미설치 (선택 사항)")
 except Exception as e:
     print(f"⚠️  PaddleOCR 초기화 실패: {e}")
     OCR_AVAILABLE = False
@@ -60,19 +78,26 @@ from vertexai.generative_models import Part
 
 
 class TextExtractor:
-    """PDF에서 페이지별 텍스트 추출 + 마커 삽입 (OCR 지원)"""
+    """
+    PDF에서 페이지별 텍스트 추출 + 마커 삽입
+    V2: pdfplumber + OCR 통합
+    """
     
     def __init__(self):
         """TextExtractor 초기화"""
+        if not PDFPLUMBER_AVAILABLE:
+            raise ImportError("pdfplumber가 필요합니다: pip install pdfplumber")
+        
         self.ocr_enabled = OCR_AVAILABLE
-        self.min_text_length = 100  # OCR 트리거 기준 (문자 수)
+        self.min_text_length = 100  # OCR 트리거 기준
     
-    def _perform_ocr(self, page) -> str:
+    def _perform_ocr_on_page(self, pdf_path: str, page_num: int) -> str:
         """
-        페이지에 OCR 수행 (PaddleOCR)
+        페이지에 OCR 수행 (pdf2image + PaddleOCR)
         
         Args:
-            page: PyMuPDF page 객체
+            pdf_path: PDF 파일 경로
+            page_num: 페이지 번호 (0-indexed)
         
         Returns:
             OCR로 추출한 텍스트
@@ -81,16 +106,21 @@ class TextExtractor:
             return ""
         
         try:
-            pix = page.get_pixmap(dpi=150)
-            img_data = pix.tobytes("png")
+            # PDF 페이지 → 이미지 변환
+            images = convert_from_path(
+                pdf_path,
+                first_page=page_num + 1,  # 1-indexed
+                last_page=page_num + 1,
+                dpi=150
+            )
             
-            import numpy as np
-            from PIL import Image
-            from io import BytesIO
+            if not images:
+                return ""
             
-            img = Image.open(BytesIO(img_data))
+            img = images[0]
             img_array = np.array(img)
             
+            # OCR 실행
             result = ocr_engine.ocr(img_array, cls=True)
             
             if result and result[0]:
@@ -114,8 +144,7 @@ class TextExtractor:
     ) -> Dict[str, Any]:
         """
         PDF에서 페이지별 텍스트 추출 + 마커 삽입
-        PyMuPDF 우선, 없으면 pdfplumber 사용
-        텍스트 부족 시 OCR 자동 수행
+        pdfplumber 사용, 텍스트 부족 시 OCR 자동 수행
         
         Args:
             pdf_path: PDF 파일 경로
@@ -127,78 +156,44 @@ class TextExtractor:
                 "total_pages": 21
             }
         """
-        if PYMUPDF_AVAILABLE:
-            return self._extract_with_pymupdf(pdf_path, prefix)
-        else:
-            return self._extract_with_pdfplumber(pdf_path, prefix)
-    
-    def _extract_with_pymupdf(self, pdf_path: str, prefix: str) -> Dict[str, Any]:
-        """PyMuPDF로 텍스트 추출 (OCR 지원)"""
         pages_text = []
         total_pages = 0
         ocr_count = 0
         
         try:
-            doc = fitz.open(pdf_path)
-            total_pages = len(doc)
-            
-            print(f"   📄 텍스트 추출 중... (OCR {'활성화' if self.ocr_enabled else '비활성화'})")
-            
-            for page_num in range(total_pages):
-                page = doc[page_num]
-                text = page.get_text()
-                text_length = len(text.strip())
-                
-                if text_length < self.min_text_length and self.ocr_enabled:
-                    print(f"      → 페이지 {page_num + 1}: 텍스트 부족 ({text_length}자) → OCR 수행")
-                    ocr_text = self._perform_ocr(page)
-                    
-                    if ocr_text:
-                        text = ocr_text
-                        ocr_count += 1
-                        print(f"         ✅ OCR 완료 ({len(ocr_text)}자 추출)")
-                    else:
-                        print(f"         ⚠️  OCR 실패, 원본 텍스트 사용")
-                
-                lines = text.split('\n')
-                title = lines[0][:50] if lines and lines[0].strip() else f"Page {page_num + 1}"
-                
-                pages_text.append(f"[{prefix}-PAGE {page_num + 1}: {title}]")
-                pages_text.append(text)
-                pages_text.append("")
-            
-            doc.close()
-            
-            if ocr_count > 0:
-                print(f"   ✅ OCR 처리 완료: {ocr_count}개 페이지")
-        
-        except Exception as e:
-            print(f"   ❌ PDF 텍스트 추출 실패: {e}")
-            return {"full_text": "", "total_pages": 0}
-        
-        return {
-            "full_text": "\n".join(pages_text),
-            "total_pages": total_pages
-        }
-    
-    def _extract_with_pdfplumber(self, pdf_path: str, prefix: str) -> Dict[str, Any]:
-        """pdfplumber로 텍스트 추출 (fallback)"""
-        pages_text = []
-        total_pages = 0
-        
-        try:
             with pdfplumber.open(pdf_path) as pdf:
                 total_pages = len(pdf.pages)
                 
-                for page_num, page in enumerate(pdf.pages, 1):
+                print(f"   📄 텍스트 추출 중... (OCR {'활성화' if self.ocr_enabled else '비활성화'})")
+                
+                for page_num, page in enumerate(pdf.pages):
+                    # pdfplumber로 텍스트 추출
                     text = page.extract_text() or ""
+                    text_length = len(text.strip())
                     
+                    # 텍스트 부족 → OCR 수행
+                    if text_length < self.min_text_length and self.ocr_enabled:
+                        print(f"      → 페이지 {page_num + 1}: 텍스트 부족 ({text_length}자) → OCR 수행")
+                        ocr_text = self._perform_ocr_on_page(pdf_path, page_num)
+                        
+                        if ocr_text:
+                            text = ocr_text
+                            ocr_count += 1
+                            print(f"         ✅ OCR 완료 ({len(ocr_text)}자 추출)")
+                        else:
+                            print(f"         ⚠️  OCR 실패, 원본 텍스트 사용")
+                    
+                    # 페이지 제목 추출
                     lines = text.split('\n')
-                    title = lines[0][:50] if lines and lines[0].strip() else f"Page {page_num}"
+                    title = lines[0][:50] if lines and lines[0].strip() else f"Page {page_num + 1}"
                     
-                    pages_text.append(f"[{prefix}-PAGE {page_num}: {title}]")
+                    # 마커 삽입
+                    pages_text.append(f"[{prefix}-PAGE {page_num + 1}: {title}]")
                     pages_text.append(text)
                     pages_text.append("")
+                
+                if ocr_count > 0:
+                    print(f"   ✅ OCR 처리 완료: {ocr_count}개 페이지")
         
         except Exception as e:
             print(f"   ❌ PDF 텍스트 추출 실패: {e}")
@@ -265,11 +260,11 @@ class ImageDescriptionGenerator:
                         print(" 재시도")
                         continue
                     else:
-                        return f"이미지 설명 생성 실패: API rate limit exceeded", 0, 0.0
+                        return "이미지 설명 생성 실패: API rate limit exceeded"
                 else:
-                    return f"이미지 설명 생성 실패: {error_msg}", 0, 0.0
+                    return f"이미지 설명 생성 실패: {error_msg}"
         
-        return "이미지 설명 생성 실패: Failed after all retries", 0, 0.0
+        return "이미지 설명 생성 실패: Failed after all retries"
     
     def _get_mime_type(self, image_bytes: bytes) -> str:
         """이미지 바이너리에서 MIME 타입 감지"""
@@ -344,7 +339,6 @@ class MetadataGenerator:
                         print(f"   ✅ 보조자료 {i} 처리 성공")
                     except Exception as e:
                         print(f"   ⚠️ 보조자료 {i} 처리 실패 (계속 진행): {e}")
-                        # 실패해도 다음 보조자료로 넘어감
             else:
                 print("   ⚠️  보조자료 없음 (선택 사항)")
             
@@ -376,18 +370,16 @@ class MetadataGenerator:
             return str(output_path)
     
     def _process_primary_source(self, file_path: str) -> Dict[str, Any]:
-
         """
         주강의자료 처리
-        ✅ TXT/URL 지원 추가 (수정됨)
+        ✅ TXT/URL 지원 추가
         """
         file_path_str = str(file_path)
-        # file_path = Path(file_path)
         
-        # ✅ 원본 파일 타입 감지 (변환 전)
+        # 원본 파일 타입 감지
         if file_path_str.startswith(('http://', 'https://')):
             original_file_type = 'url'
-            file_path_obj = None  # URL은 Path 객체 만들지 않음
+            file_path_obj = None
             display_name = file_path_str[:50]
         else:
             file_path_obj = Path(file_path)
@@ -400,20 +392,10 @@ class MetadataGenerator:
         print(f"   🔄 파일 처리 중...")
         processed_path = self.converter.convert(file_path_str)
         
-        # ✅ 변환 후 파일은 항상 PDF임!
-        processed_file_type = Path(processed_path).suffix.lower().replace('.', '')
-        
         # 2. 텍스트 추출
         print(f"   📝 텍스트 추출 중...")
-        
-        # ✅ TXT/URL이었어도 이제는 PDF가 되었으므로 PDF 처리 로직 사용
-        if original_file_type in ['txt', 'url']:
-            # TXT/URL → PDF 변환됨 → PDF에서 텍스트 추출
-            text_data = self.text_extractor.extract_with_markers(processed_path, prefix="MAIN")
-            print(f"   ✅ 텍스트 추출 완료: {len(text_data['full_text'])}자")
-        else:
-            # 기존 PDF/PPTX/DOCX 처리
-            text_data = self.text_extractor.extract_with_markers(processed_path, prefix="MAIN")
+        text_data = self.text_extractor.extract_with_markers(processed_path, prefix="MAIN")
+        print(f"   ✅ 텍스트 추출 완료: {len(text_data['full_text'])}자")
         
         # 3. 이미지 필터링
         print(f"   🖼️  이미지 처리 중...")
@@ -421,7 +403,7 @@ class MetadataGenerator:
         filtered_images = []
         keywords = []
         
-        # ✅ TXT/URL은 이미지 없음
+        # TXT/URL은 이미지 없음
         if original_file_type in ['txt', 'url']:
             print(f"      → TXT/URL은 이미지 없음, 건너뛰기")
             all_images = []
@@ -458,7 +440,7 @@ class MetadataGenerator:
                 elif decision == "PENDING":
                     ai_result = self.image_filter.step2_gemini_check(img_meta)
 
-                    # step2_gemini_check가 (text, tokens, cost) 튜플을 반환하는 경우 대응
+                    # 튜플 반환 대응
                     if isinstance(ai_result, tuple):
                         ai_result = ai_result[0]
 
@@ -498,9 +480,8 @@ class MetadataGenerator:
                 
                 print(f"\r   📝 이미지 설명 생성 중... ({i}/{len(filtered_images)})", end='', flush=True)
             
-            print()  # 줄바꿈
+            print()
             
-            # ✅ 최종 집계 출력
             print(f"\n   {'='*80}")
             print(f"   📊 이미지 설명 생성 완료")
             print(f"      - 처리된 이미지: {len(filtered_images)}개")
@@ -513,7 +494,7 @@ class MetadataGenerator:
         return {
             "role": "main",
             "filename": display_name if original_file_type == 'url' else file_path_obj.name,
-            "file_type": original_file_type,  # ✅ 원본 타입 저장
+            "file_type": original_file_type,
             "total_pages": text_data['total_pages'],
             "content": {
                 "full_text": text_data['full_text']
@@ -529,7 +510,7 @@ class MetadataGenerator:
     def _process_supplementary_source(self, file_path: str, order: int) -> Dict[str, Any]:
         file_path_str = str(file_path)
         
-        # ✅ URL과 파일 구분
+        # URL과 파일 구분
         if file_path_str.startswith(('http://', 'https://')):
             file_type = 'url'
             display_name = 'Web Content'
@@ -541,7 +522,7 @@ class MetadataGenerator:
         print(f"   📚 보조자료 {order}: {display_name} ({file_type})")
         
         print(f"      🔄 PDF 변환 중...")
-        pdf_path = self.converter.convert(file_path_str)  # ✅ 원본 문자열 그대로 전달
+        pdf_path = self.converter.convert(file_path_str)
         
         print(f"      📝 텍스트 추출 중...")
         text_data = self.text_extractor.extract_with_markers(pdf_path, prefix=f"SUPP{order}")
@@ -569,7 +550,7 @@ if __name__ == "__main__":
     import sys
     
     print("\n" + "="*120)
-    print("🎯 Metadata Generator Node")
+    print("🎯 Metadata Generator Node (V2 - pdfplumber)")
     print("="*120)
     
     if len(sys.argv) < 2:

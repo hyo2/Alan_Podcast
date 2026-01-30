@@ -1,0 +1,40 @@
+# .github/workflows/azure-static-web-apps-demo.yml
+name: Deploy Frontend Demo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend
+        env:
+          # Vite 프로젝트에서 API 주소를 인식할 수 있도록 VITE_ 접두사 사용
+          VITE_API_URL: ${{ secrets.DEMO_API_URL }}
+        run: npm run build
+
+      - name: Deploy to Azure SWA
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_SWA_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: "upload"
+          app_location: "frontend/dist" # Vite 빌드 결과물 위치로 변경
+          skip_app_build: true

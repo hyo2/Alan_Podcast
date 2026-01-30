@@ -1,30 +1,78 @@
 """
-Improved Hybrid Filter V2 (get_images() 방식)
-==============================================
+Improved Hybrid Filter V4
+==========================
 
-핵심 변경사항:
-- get_text('dict') → get_images() + get_image_bbox()
-- 모든 이미지 감지 (배경 레이어 포함)
-- 만화 콘텐츠 정상 인식
+V4 변경사항:
+- V2의 유연한 인증 로직 추가 (환경 변수 기반)
+- V3의 pdfplumber (MIT) 유지
+- 색상 복잡도 필터 유지
+- 인증 실패 시 graceful degradation
+
+핵심 기능:
+- PyMuPDF (AGPL) → pdfplumber (MIT) 전환
+- 라이선스 문제 해결
+- 색상 복잡도 필터 (텍스트 상자 배경 제거)
+- 환경 변수 기반 인증 (프로덕션 대응)
 """
 
 import os
-import vertexai
 import textwrap
 import json
 from dataclasses import dataclass
 from typing import List, Dict
 from pptx import Presentation
-from vertexai.generative_models import GenerativeModel, Part
+from vertexai.generative_models import Part
+import logging
+logger = logging.getLogger(__name__)
 
-# [1] 인증 설정
-SERVICE_ACCOUNT_FILE = "vertex-ai-service-account.json"
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = SERVICE_ACCOUNT_FILE
-PROJECT_ID = "alan-document-lab" 
-vertexai.init(project=PROJECT_ID, location="us-central1")
+def _resolve_vertex_sa_file() -> str | None:
+    # 프로젝트에서 쓰는 키 우선순위
+    # NOTE: VERTEX_AI_SERVICE_ACCOUNT_JSON(=JSON 문자열)은 main.py의 patch_vertex_ai_env()에서
+    # 파일로 변환 후 GOOGLE_APPLICATION_CREDENTIALS로 연결되므로 여기서는 "경로"만 확인한다.
+    for key in ("VERTEX_AI_SERVICE_ACCOUNT_FILE", "GOOGLE_APPLICATION_CREDENTIALS"):
+        p = os.getenv(key)
+        if p and os.path.exists(p):
+            return p
+    return None
 
-# [2] Gemini 2.5 Flash 모델 로드
-model = GenerativeModel("gemini-2.5-flash")
+def get_vertex_text_model():
+    """
+    키워드 추출/이미지 판단(vision)에서 쓰는 Gemini 모델 lazy init.
+    - 인증 파일 없으면 None 반환 (로컬 데모에서 vision만 스킵 가능)
+    """
+    try:
+        sa_file = _resolve_vertex_sa_file()
+        if not sa_file:
+            logger.warning("ℹ️ Vertex 서비스 계정 파일이 없어 Gemini 호출을 스킵합니다.")
+            return None
+
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = sa_file
+
+        import vertexai
+        from vertexai.generative_models import GenerativeModel
+
+        project_id = os.getenv("VERTEX_AI_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
+        location = os.getenv("VERTEX_AI_REGION", "us-central1")
+
+        if project_id:
+            vertexai.init(project=project_id, location=location)
+        else:
+            vertexai.init(location=location)
+
+        model_name = os.getenv("VERTEX_AI_MODEL_TEXT", "gemini-2.5-flash")
+        return GenerativeModel(model_name)
+
+    except Exception as e:
+        logger.exception(f"Vertex/Gemini 초기화 실패: {e}")
+        return None
+    
+model = None
+
+def get_global_model():
+    global model
+    if model is None:
+        model = get_vertex_text_model()
+    return model
 
 @dataclass
 class ImageMetadata:
@@ -43,7 +91,7 @@ class ImageMetadata:
 class UniversalImageExtractor:
     """
     모든 형식에서 이미지 메타데이터 추출
-    V2: get_images() 방식으로 모든 이미지 감지
+    V3: pdfplumber (MIT) 사용
     """
     
     def extract(self, file_path: str) -> List[ImageMetadata]:
@@ -54,7 +102,7 @@ class UniversalImageExtractor:
         if ext == '.pptx':
             return self._extract_from_pptx(file_path)
         elif ext == '.pdf':
-            return self._extract_from_pdf_v2(file_path)
+            return self._extract_from_pdf_v3(file_path)  # ✅ v3로 변경
         else:
             raise ValueError(f"지원하지 않는 형식: {ext}")
     
@@ -91,16 +139,29 @@ class UniversalImageExtractor:
         
         return metadata_list
     
-    def _extract_text_with_ocr(self, page, min_length: int = 100) -> str:
-        """페이지에서 텍스트 추출 (필요시 OCR)"""
-        text = page.get_text()
-        text_length = len(text.strip())
+    def _extract_text_with_ocr(self, pdf_path: str, page_num: int, min_length: int = 100) -> str:
+        """
+        페이지에서 텍스트 추출 (필요시 OCR)
+        V3: pdfplumber + pdf2image + PaddleOCR
+        """
+        # ===== 1. pdfplumber로 먼저 시도 =====
+        try:
+            import pdfplumber
+            with pdfplumber.open(pdf_path) as pdf:
+                page = pdf.pages[page_num]
+                text = page.extract_text() or ""
+                text_length = len(text.strip())
+                
+                if text_length >= min_length:
+                    return text
+        except:
+            text_length = 0
         
-        if text_length >= min_length:
-            return text
-        
+        # ===== 2. 텍스트 부족 → OCR 실행 =====
         try:
             from paddleocr import PaddleOCR
+            from pdf2image import convert_from_path
+            import numpy as np
             
             if not hasattr(self, '_ocr_engine'):
                 os.environ['FLAGS_log_level'] = '3'
@@ -109,16 +170,23 @@ class UniversalImageExtractor:
                 print(f"      → PaddleOCR 초기화 중...")
                 self._ocr_engine = PaddleOCR(lang='korean', use_textline_orientation=True)
             
-            pix = page.get_pixmap(dpi=150)
-            img_data = pix.tobytes("png")
+            # ===== pdf2image로 해당 페이지만 이미지로 변환 =====
+            # first_page와 last_page를 1-indexed로 지정
+            images = convert_from_path(
+                pdf_path, 
+                first_page=page_num + 1,  # 1-indexed
+                last_page=page_num + 1,
+                dpi=150
+            )
             
-            import numpy as np
-            from PIL import Image
-            from io import BytesIO
+            if not images:
+                print(f"      → PDF 이미지 변환 실패")
+                return text
             
-            img = Image.open(BytesIO(img_data))
+            img = images[0]
             img_array = np.array(img)
             
+            # ===== OCR 실행 =====
             result = self._ocr_engine.ocr(img_array)
             
             if result and result[0]:
@@ -129,15 +197,185 @@ class UniversalImageExtractor:
                         lines.append(ocr_text)
                 
                 ocr_result = "\n".join(lines)
-                print(f"      → 페이지 OCR: {text_length}자 → {len(ocr_result)}자")
+                print(f"      → OCR 완료: {text_length}자 → {len(ocr_result)}자")
                 return ocr_result if ocr_result else text
         
         except ImportError:
-            pass
+            print(f"      → PaddleOCR/pdf2image 미설치, 텍스트만 사용")
+            return text
         except Exception as e:
             print(f"      ⚠️  OCR 실패: {e}")
+            return text
         
         return text
+    
+    def _extract_text_bboxes_with_ocr(self, pdf_path: str, page_num: int) -> List[Dict]:
+        """
+        페이지에서 텍스트 bbox 추출 (OCR 활용)
+        
+        Returns:
+            [{'x0', 'top', 'x1', 'bottom'}, ...]
+        """
+        text_bboxes = []
+        
+        # ===== 1. pdfplumber로 먼저 시도 =====
+        try:
+            import pdfplumber
+            with pdfplumber.open(pdf_path) as pdf:
+                page = pdf.pages[page_num]
+                chars = page.chars
+                
+                if chars and len(chars) > 0:
+                    # 텍스트 레이어가 있음
+                    for char in chars:
+                        text_bboxes.append({
+                            'x0': char['x0'],
+                            'top': char['top'],
+                            'x1': char['x1'],
+                            'bottom': char['bottom']
+                        })
+                    
+                    print(f"      → pdfplumber로 {len(text_bboxes)}개 문자 bbox 추출")
+                    return text_bboxes
+        except:
+            pass
+        
+        # ===== 2. 텍스트 레이어 없음 → OCR로 bbox 추출 =====
+        try:
+            from paddleocr import PaddleOCR
+            from pdf2image import convert_from_path
+            import numpy as np
+            
+            if not hasattr(self, '_ocr_engine'):
+                os.environ['FLAGS_log_level'] = '3'
+                os.environ['PPOCR_SHOW_LOG'] = 'False'
+                self._ocr_engine = PaddleOCR(lang='korean', use_textline_orientation=True)
+            
+            # pdf → image
+            images = convert_from_path(
+                pdf_path, 
+                first_page=page_num + 1,
+                last_page=page_num + 1,
+                dpi=150
+            )
+            
+            if not images:
+                return []
+            
+            img = images[0]
+            img_array = np.array(img)
+            
+            # OCR 실행
+            result = self._ocr_engine.ocr(img_array)
+            
+            if result and result[0]:
+                # OCR 결과에서 bbox 추출
+                for line in result[0]:
+                    if line and len(line) >= 2:
+                        # line[0]: bbox [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
+                        bbox_points = line[0]
+                        
+                        # bbox를 x0, top, x1, bottom으로 변환
+                        x_coords = [p[0] for p in bbox_points]
+                        y_coords = [p[1] for p in bbox_points]
+                        
+                        text_bboxes.append({
+                            'x0': min(x_coords),
+                            'top': min(y_coords),
+                            'x1': max(x_coords),
+                            'bottom': max(y_coords)
+                        })
+                
+                print(f"      → OCR로 {len(text_bboxes)}개 텍스트 bbox 추출")
+                return text_bboxes
+        
+        except Exception as e:
+            print(f"      ⚠️  텍스트 bbox 추출 실패: {e}")
+            return []
+        
+        return []
+    
+    def _calculate_text_overlap(self, img_bbox: tuple, text_bboxes: List[Dict]) -> float:
+        """
+        이미지와 텍스트의 중첩 비율 계산
+        
+        Args:
+            img_bbox: (x0, top, x1, bottom)
+            text_bboxes: [{'x0', 'top', 'x1', 'bottom'}, ...]
+        
+        Returns:
+            중첩 비율 (0.0 ~ 1.0)
+        """
+        if not text_bboxes:
+            return 0.0
+        
+        img_x0, img_top, img_x1, img_bottom = img_bbox
+        img_area = (img_x1 - img_x0) * (img_bottom - img_top)
+        
+        if img_area <= 0:
+            return 0.0
+        
+        overlap_area = 0.0
+        
+        for text_bbox in text_bboxes:
+            # 교집합 계산
+            x0 = max(img_x0, text_bbox['x0'])
+            top = max(img_top, text_bbox['top'])
+            x1 = min(img_x1, text_bbox['x1'])
+            bottom = min(img_bottom, text_bbox['bottom'])
+            
+            if x0 < x1 and top < bottom:
+                overlap_area += (x1 - x0) * (bottom - top)
+        
+        overlap_ratio = overlap_area / img_area
+        
+        return overlap_ratio
+    
+    def _calculate_color_complexity(self, image_bytes) -> int:
+        """
+        이미지의 색상 복잡도 계산 (고유 색상 수)
+        
+        텍스트 상자 배경: 10-300개 (단조로운 색상)
+        진짜 콘텐츠: 500+ 개 (복잡한 색상)
+        
+        Args:
+            image_bytes: 이미지 바이너리 데이터
+        
+        Returns:
+            고유 색상 수 (0 ~ 10000+)
+        """
+        try:
+            from PIL import Image
+            import io
+            
+            # 바이너리 → PIL Image
+            img = Image.open(io.BytesIO(image_bytes))
+            
+            # RGB 변환
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # 너무 크면 리사이즈 (속도 향상)
+            max_size = 500
+            if img.width > max_size or img.height > max_size:
+                ratio = min(max_size / img.width, max_size / img.height)
+                new_size = (int(img.width * ratio), int(img.height * ratio))
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+            
+            # 고유 색상 수 계산
+            colors = img.getcolors(maxcolors=10000)
+            
+            if colors:
+                unique_colors = len(colors)
+            else:
+                # 10000개 이상 색상
+                unique_colors = 10000
+            
+            return unique_colors
+        
+        except Exception as e:
+            logger.warning(f"색상 분석 실패: {e}")
+            return 10000  # 실패 시 복잡한 이미지로 간주
     
     def _extract_page_title(self, page_text: str) -> str:
         """페이지 제목 추출"""
@@ -148,18 +386,19 @@ class UniversalImageExtractor:
                 return line[:50]
         return "페이지 제목 없음"
     
-    def _extract_from_pdf_v2(self, pdf_path: str) -> List[ImageMetadata]:
+    def _extract_from_pdf_v3(self, pdf_path: str) -> List[ImageMetadata]:
         """
-        PDF에서 이미지 추출 (V2: get_images() 방식)
+        PDF에서 이미지 추출 (V3: pdfplumber 사용)
         
         핵심 변경:
-        - get_text('dict') → get_images() + get_image_bbox()
-        - 모든 이미지 감지 (배경 레이어 포함)
+        - PyMuPDF → pdfplumber (MIT 라이선스)
+        - 기능 동일하게 유지
         """
         try:
-            import fitz
+            import pdfplumber  # ✅ pdfplumber 사용
         except ImportError:
-            print("   ❌ PyMuPDF가 설치되지 않았습니다.")
+            print("   ❌ pdfplumber가 설치되지 않았습니다.")
+            print("   pip install pdfplumber")
             return []
         
         if not os.path.exists(pdf_path):
@@ -180,107 +419,157 @@ class UniversalImageExtractor:
         filtered_aspect = 0
         filtered_area = 0
         filtered_size = 0
+        filtered_text_overlap = 0  # ✅ 추가
         
         try:
-            doc = fitz.open(pdf_path)
-            
-            for page_num in range(len(doc)):
-                page = doc[page_num]
+            # ===== pdfplumber로 PDF 열기 =====
+            with pdfplumber.open(pdf_path) as pdf:
                 
-                # 페이지 정보
-                page_area = page.rect.width * page.rect.height
-                page_text = self._extract_text_with_ocr(page, min_length=100)
-                page_title = self._extract_page_title(page_text)
-                
-                # ===== get_images()로 모든 이미지 감지 =====
-                images = page.get_images(full=True)
-                total_images += len(images)
-                
-                print(f"      [P{page_num+1}] 총 {len(images)}개 이미지 발견")
-                
-                for img in images:
-                    try:
-                        xref = img[0]
-                        
-                        # bbox 가져오기
-                        try:
-                            bbox = page.get_image_bbox(img)
-                        except:
-                            continue
-                        
-                        if not bbox or bbox.is_empty or bbox.is_infinite:
-                            continue
-                        
-                        x0, y0, x1, y1 = bbox
-                        width = x1 - x0
-                        height = y1 - y0
-                        area_pct = (width * height) / page_area * 100
-                        
-                        debug_msg = f"      [P{page_num+1}] {area_pct:.1f}%"
-                        
-                        # ===== 필터 1: 배경 제외 (90% 이상) =====
-                        if area_pct > MAX_AREA_PCT:
-                            filtered_background += 1
-                            print(debug_msg + f" → 배경 제외 ❌")
-                            continue
-                        
-                        # ===== 필터 2: 가로세로비 =====
-                        if width > 0 and height > 0:
-                            aspect_ratio = max(width, height) / min(width, height)
-                            if aspect_ratio > MAX_ASPECT_RATIO:
-                                filtered_aspect += 1
-                                print(debug_msg + f" → 가로세로비 제외 ({aspect_ratio:.1f}:1) ❌")
-                                continue
-                        
-                        # ===== 필터 3: 작은 면적 =====
-                        pixel_area = width * height
-                        if pixel_area < MIN_PIXEL_AREA:
-                            filtered_area += 1
-                            print(debug_msg + f" → 작은 면적 제외 ❌")
-                            continue
-                        
-                        # ===== 필터 4: 절대 크기 =====
-                        if width < MIN_WIDTH or height < MIN_HEIGHT:
-                            filtered_size += 1
-                            print(debug_msg + f" → 작은 크기 제외 ❌")
-                            continue
-                        
-                        # ===== 필터 5: 상대 크기 =====
-                        if area_pct < MIN_AREA_PCT:
-                            filtered_size += 1
-                            print(debug_msg + f" → 상대 크기 제외 ({area_pct:.1f}%) ❌")
-                            continue
-                        
-                        # ===== 통과! =====
-                        print(debug_msg + " → 최종 추출 ✅✅✅")
-                        
-                        # 이미지 추출
-                        try:
-                            base_image = doc.extract_image(xref)
-                            image_bytes = base_image["image"]
-                        except:
-                            pix = page.get_pixmap(clip=fitz.Rect(bbox), dpi=150)
-                            image_bytes = pix.tobytes("png")
-                        
-                        metadata_list.append(ImageMetadata(
-                            image_id=f"P{page_num+1:02d}_IMG{len(metadata_list)+1:03d}",
-                            slide_number=page_num + 1,
-                            area_percentage=area_pct,
-                            left=x0,
-                            top=y0,
-                            adjacent_text=page_text.replace('\n', ' ').strip(),
-                            slide_title=page_title,
-                            image_bytes=image_bytes
-                        ))
+                for page_num, page in enumerate(pdf.pages):
+                    # 페이지 정보
+                    page_width = page.width
+                    page_height = page.height
+                    page_area = page_width * page_height
                     
-                    except Exception as e:
-                        print(f"      ⚠️ 이미지 처리 실패: {e}")
-                        continue
-            
-            doc.close()
+                    # 텍스트 추출 (OCR 포함)
+                    page_text = self._extract_text_with_ocr(pdf_path, page_num, min_length=100)
+                    page_title = self._extract_page_title(page_text)
+                    
+                    # ===== 텍스트 bbox 추출 (중첩 체크용) =====
+                    text_bboxes = self._extract_text_bboxes_with_ocr(pdf_path, page_num)
+                    
+                    # ===== pdfplumber로 이미지 목록 가져오기 =====
+                    images = page.images
+                    total_images += len(images)
+                    
+                    print(f"      [P{page_num+1}] 총 {len(images)}개 이미지 발견")
+                    
+                    for img in images:
+                        try:
+                            # ===== bbox 정보 (pdfplumber 형식) =====
+                            x0 = img['x0']
+                            top = img['top']
+                            x1 = img['x1']
+                            bottom = img['bottom']
+                            
+                            width = x1 - x0
+                            height = bottom - top
+                            area_pct = (width * height) / page_area * 100
+                            
+                            debug_msg = f"      [P{page_num+1}] {area_pct:.1f}%"
+                            
+                            # ===== 필터 1: 배경 제외 (90% 이상) =====
+                            if area_pct > MAX_AREA_PCT:
+                                filtered_background += 1
+                                print(debug_msg + f" → 배경 제외 ❌")
+                                continue
+                            
+                            # ===== 필터 2: 가로세로비 =====
+                            if width > 0 and height > 0:
+                                aspect_ratio = max(width, height) / min(width, height)
+                                if aspect_ratio > MAX_ASPECT_RATIO:
+                                    filtered_aspect += 1
+                                    print(debug_msg + f" → 가로세로비 제외 ({aspect_ratio:.1f}:1) ❌")
+                                    continue
+                            
+                            # ===== 필터 3: 작은 면적 =====
+                            pixel_area = width * height
+                            if pixel_area < MIN_PIXEL_AREA:
+                                filtered_area += 1
+                                print(debug_msg + f" → 작은 면적 제외 ❌")
+                                continue
+                            
+                            # ===== 필터 4: 절대 크기 =====
+                            if width < MIN_WIDTH or height < MIN_HEIGHT:
+                                filtered_size += 1
+                                print(debug_msg + f" → 작은 크기 제외 ❌")
+                                continue
+                            
+                            # ===== 필터 5: 상대 크기 =====
+                            if area_pct < MIN_AREA_PCT:
+                                filtered_size += 1
+                                print(debug_msg + f" → 상대 크기 제외 ({area_pct:.1f}%) ❌")
+                                continue
+                            
+                            # ===== 통과! =====
+                            print(debug_msg + " → 최종 추출 ✅✅✅")
+                            
+                            # ===== 필터 6: 텍스트 중첩 + 색상 복잡도 체크 ⭐⭐⭐ =====
+                            # 이미지 바이너리 추출
+                            stream = img.get('stream')
+                            
+                            if stream:
+                                if hasattr(stream, 'get_data'):
+                                    image_bytes = stream.get_data()
+                                elif hasattr(stream, 'rawdata'):
+                                    image_bytes = stream.rawdata
+                                else:
+                                    print(debug_msg + " → 바이너리 추출 실패 ⚠️")
+                                    continue
+                            else:
+                                print(debug_msg + " → stream 없음 ⚠️")
+                                continue
+                            
+                            # 텍스트 중첩 계산
+                            img_bbox = (x0, top, x1, bottom)
+                            overlap_ratio = self._calculate_text_overlap(img_bbox, text_bboxes)
+                            
+                            # 색상 복잡도 계산
+                            color_count = self._calculate_color_complexity(image_bytes)
+                            
+                            # 판단 로직 (색상 + 중첩)
+                            is_textbox = False
+                            filter_reason = ""
+                            
+                            # 규칙 1: 단조로운 색상 (< 300개) → 텍스트 상자 가능성
+                            if color_count < 300:
+                                if overlap_ratio >= 0.05:  # 5% 이상 중첩
+                                    is_textbox = True
+                                    filter_reason = f"단조색상({color_count}개)+중첩({overlap_ratio*100:.0f}%)"
+                                elif area_pct >= 15.0:
+                                    is_textbox = True
+                                    filter_reason = f"단조색상({color_count}개)+대형"
+                            
+                            # 규칙 2: 복잡한 색상 (>= 500개) → 진짜 콘텐츠 가능성
+                            elif color_count >= 500:
+                                if overlap_ratio >= 0.30:  # 30% 이상만 제외
+                                    is_textbox = True
+                                    filter_reason = f"고중첩({overlap_ratio*100:.0f}%)"
+                                # else: 통과
+                            
+                            # 규칙 3: 중간 복잡도 (300-500개) → 중첩 비율로 판단
+                            else:
+                                if overlap_ratio >= 0.15:  # 15% 이상
+                                    is_textbox = True
+                                    filter_reason = f"중간색상({color_count}개)+중첩({overlap_ratio*100:.0f}%)"
+                            
+                            # 결과 처리
+                            if is_textbox:
+                                filtered_text_overlap += 1
+                                print(debug_msg + f" → 텍스트상자 제외 ({filter_reason}) ❌")
+                                continue
+                            
+                            # 최종 통과 - 메타데이터 저장
+                            
+                            metadata_list.append(ImageMetadata(
+                                image_id=f"P{page_num+1:02d}_IMG{len(metadata_list)+1:03d}",
+                                slide_number=page_num + 1,
+                                area_percentage=area_pct,
+                                left=x0,
+                                top=top,
+                                adjacent_text=page_text.replace('\n', ' ').strip(),
+                                slide_title=page_title,
+                                image_bytes=image_bytes
+                            ))
+                        
+                        except Exception as e:
+                            print(f"      ⚠️ 이미지 처리 실패: {e}")
+                            continue
         
         except Exception as e:
             print(f"   ❌ PDF 처리 실패: {e}")
+            import traceback
+            traceback.print_exc()
             return []
         
         # 통계
@@ -291,6 +580,7 @@ class UniversalImageExtractor:
         print(f"      - 가로세로비: {filtered_aspect}개")
         print(f"      - 작은 면적: {filtered_area}개")
         print(f"      - 작은 크기: {filtered_size}개")
+        print(f"      - 텍스트 상자 (색상+중첩): {filtered_text_overlap}개")  # ✅ 추가
         print(f"   ✅ 최종 추출: {len(metadata_list)}개 이미지\n")
         
         return metadata_list
@@ -315,6 +605,8 @@ class ImprovedHybridFilterPipeline:
         ]
         
         self.document_keywords = []
+        
+        self.model = get_global_model()
 
     def extract_keywords_from_document(self, file_path: str):
         """문서에서 자동으로 키워드 추출"""
@@ -336,7 +628,7 @@ class ImprovedHybridFilterPipeline:
                         all_text.append(shape.text)
         
         elif ext == '.pdf':
-            import pdfplumber
+            import pdfplumber  # ✅ pdfplumber 사용
             try:
                 with pdfplumber.open(file_path) as pdf:
                     for page in pdf.pages:
@@ -364,17 +656,13 @@ class ImprovedHybridFilterPipeline:
 - JSON 형식: {{"keywords": ["키워드1", "키워드2", ...]}}
 """
         
+        if self.model is None:
+            print("   ⚠️ Gemini 모델 초기화 실패(인증 없음). 키워드 자동 추출 스킵.")
+            self.document_keywords = []
+            return
+
         try:
-            response = model.generate_content(prompt)
-
-            # ✅ 토큰 추출
-            usage = response.usage_metadata
-            in_t = usage.prompt_token_count
-            out_t = usage.candidates_token_count
-            cost = (in_t / 1_000_000 * 0.075) + (out_t / 1_000_000 * 0.30)
-            
-            print(f"📊 [키워드 추출] 토큰: {usage.total_token_count:,} (In: {in_t}/Out: {out_t}) / 비용: ${cost:.6f}")
-
+            response = self.model.generate_content(prompt)
             text = response.text.strip()
             
             if "```json" in text:
@@ -420,6 +708,10 @@ class ImprovedHybridFilterPipeline:
         """AI Vision으로 2차 판단"""
         import time
         
+        
+        if self.model is None:
+            return "DISCARD: Gemini unavailable (no credentials)", 0, 0.0
+
         for attempt in range(max_retries):
             try:
                 image_part = Part.from_data(data=meta.image_bytes, mime_type="image/png")
@@ -429,26 +721,25 @@ class ImprovedHybridFilterPipeline:
                 prompt = f"""
 이 강의의 핵심 주제: {keyword_list}
 
-이 이미지가 위 주제들과 관련있는지 판단하세요.
-
 주변 텍스트: "{meta.adjacent_text}"
 
-판단:
-- 학습에 필요한 핵심 자료 → KEEP + 이유
-- 장식/로고/배경 → DISCARD + 이유
+이 이미지가 위 주제와 관련있는 **핵심 학습 자료**인지 판단하세요.
 
-출력: KEEP 또는 DISCARD로 시작
+✅ KEEP 기준:
+- 주제를 구체적으로 설명하는 시각 자료 (차트, 그래프, 다이어그램, 도표, 만화, 사진)
+- 주변 텍스트와 긴밀하게 연결된 핵심 콘텐츠
+
+❌ DISCARD 기준:
+- 장식용 이미지 (아이콘, 배경, 테두리, 단순 도형)
+- 학습 상황 묘사 삽화 (선생님/학생 그림, 공부하는 모습 등) ⚠️ 중요!
+- 주제와 무관하거나 일반적인 이미지
+
+⚠️ 주의: "학습 맥락 제공"은 DISCARD입니다. 진짜 교육 콘텐츠만 KEEP하세요.
+
+출력 형식: KEEP 또는 DISCARD로 시작 + 이유 (1-2문장)
 """
-                response = model.generate_content([image_part, prompt])
-
-                # ✅ 토큰 및 비용 계산 추가
-                # ✅ Gemini 2.5 Flash 공식 단가 적용
-                input_tokens = response.usage_metadata.prompt_token_count
-                output_tokens = response.usage_metadata.candidates_token_count
-                total_tokens = response.usage_metadata.total_token_count
-                cost = (input_tokens / 1_000_000 * 0.075) + (output_tokens / 1_000_000 * 0.30)
-
-                return response.text.strip(), total_tokens, cost
+                response = self.model.generate_content([image_part, prompt])
+                return response.text.strip()
                 
             except Exception as e:
                 error_msg = str(e)
@@ -460,11 +751,11 @@ class ImprovedHybridFilterPipeline:
                         time.sleep(wait_time)
                         continue
                     else:
-                        return "DISCARD: API rate limit exceeded", 0, 0.0
+                        return "DISCARD: API rate limit exceeded"
                 else:
-                    return f"ERROR: {error_msg}", 0, 0.0
+                    return f"ERROR: {error_msg}"
         
-        return "DISCARD: Failed after all retries", 0, 0.0
+        return "DISCARD: Failed after all retries"
 
     def run(self, source_path: str):
         """이미지 필터링 실행"""
@@ -494,7 +785,7 @@ class ImprovedHybridFilterPipeline:
         
         for meta in all_meta:
             decision_type, s1_reason = self.step1_rule_check(meta)
-
+            
             final_status = ""
             filter_stage = ""
             detail_reason = ""
@@ -509,7 +800,7 @@ class ImprovedHybridFilterPipeline:
                 
             elif decision_type == "PENDING":
                 filter_stage = "2차 (AI)"
-                ai_res, tokens, cost = self.step2_gemini_check(meta)
+                ai_res = self.step2_gemini_check(meta)
                 
                 if ai_res.upper().startswith("KEEP"):
                     meta.is_core_content = True
@@ -565,7 +856,7 @@ if __name__ == "__main__":
     import sys
     
     print("\n" + "="*120)
-    print("🎯 Improved Hybrid Filter V2 - 이미지 필터링")
+    print("🎯 Improved Hybrid Filter V3 - 이미지 필터링 (pdfplumber)")
     print("="*120)
     
     if len(sys.argv) > 1:
@@ -598,11 +889,14 @@ if __name__ == "__main__":
     
     else:
         print("\n사용법:")
-        print("  python improved_hybrid_filter_v2.py <파일경로>")
+        print("  python improved_hybrid_filter_v3.py <파일경로>")
         print("\n예시:")
-        print("  python improved_hybrid_filter_v2.py 중등국어1.pdf")
-        print("\n✅ V2 개선사항:")
-        print("  - get_images() 방식으로 모든 이미지 감지")
-        print("  - 만화 콘텐츠 정상 인식")
-        print("  - 배경 이미지 자동 제외")
+        print("  python improved_hybrid_filter_v3.py 중등국어1.pdf")
+        print("\n✅ V3 개선사항:")
+        print("  - PyMuPDF (AGPL) → pdfplumber (MIT) 전환")
+        print("  - 라이선스 문제 해결")
+        print("  - OCR 기능 완전 유지 (pdf2image + PaddleOCR)")
+        print("  - 텍스트-이미지 중첩 감지 유지")
+        print("  - 색상 복잡도 필터 추가 (텍스트 상자 제거) ⭐")
+        print("  - 기존 v2 기능 모두 유지")
         print("="*120 + "\n")

@@ -1,0 +1,38 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+
+    "ENVIRONMENT": "development",
+    "INTERNAL_SERVICE_TOKEN": "your-secret-token-here",
+
+    "PORT": "7071",
+    "LOG_LEVEL": "INFO",
+
+    "CORS_ORIGINS": "",
+
+    "VERTEX_AI_PROJECT_ID": "your-project-id",
+    "VERTEX_AI_REGION": "us-central1",
+    "VERTEX_AI_SERVICE_ACCOUNT_FILE": "path/to/service-account.json",
+    "VERTEX_AI_MODEL_TEXT": "gemini-2.5-flash",
+
+    "GOOGLE_CLOUD_PROJECT": "",
+    "GCS_BUCKET": "",
+
+    "DATABASE_URL": "postgresql://user:password@host:5432/database",
+    "REPO_BACKEND": "postgres",
+
+    "AZURE_STORAGE_CONNECTION_STRING": "your-connection-string",
+    "AZURE_STORAGE_CONTAINER": "your-container",
+    "STORAGE_BACKEND": "azure",
+
+    "BASE_OUTPUT_DIR": "./outputs",
+    "FRONTEND_URL": "http://localhost:5173",
+
+    "LANGSMITH_API_KEY": "",
+    "LANGSMITH_ENDPOINT": "https://api.smith.langchain.com",
+    "LANGSMITH_PROJECT": "ai_audiobook",
+    "LANGCHAIN_TRACING_V2": "false"
+  }
+}

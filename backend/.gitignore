@@ -1,5 +1,6 @@
 # Project outputs (do not commit generated files)
 outputs/
+ai_audiobook/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -28,6 +29,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+.python_packages/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -132,6 +134,12 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.env*
+
+# 환경별 환경변수 파일 (민감 정보 포함)
+.env.development
+.env.staging
+.env.production
 
 # Spyder project settings
 .spyderproject
@@ -164,6 +172,20 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 uv.lock
+
 .langgraph_api/
 
 .vscode/
+
+# vertex-ai-service-account.json
+vertex-ai-service-account.json
+
+# local test folders
+test/
+
+# Azure Functions local settings (secrets)
+local.settings.json
+**/local.settings.json
+
+# (선택) Azure Functions local storage emulator artifacts (가끔 생김)
+.azurefunctions/

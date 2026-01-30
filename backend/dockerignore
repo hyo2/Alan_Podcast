@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# Azure Functions
+.python_packages/
+.funcignore
+
+# 환경 변수
+.env
+.env.*
+!.env.example
+local.settings.json
+!local.settings.json.example
+
+# 출력 파일
+outputs/
+*.wav
+*.mp3
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 문서
+README.md
+*.md
+docs/
+
+# 테스트
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 기타
+.DS_Store
+Thumbs.db
+*.log

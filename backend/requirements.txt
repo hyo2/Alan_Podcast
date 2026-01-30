@@ -1,4 +1,4 @@
-# -----------------------------
+﻿# -----------------------------
 # FastAPI / Server
 # -----------------------------
 fastapi==0.121.2
@@ -22,6 +22,7 @@ google-api-core==2.28.1
 google-auth==2.43.0
 google-auth-oauthlib==1.2.1
 google-cloud-aiplatform==1.75.0
+google-cloud-speech==2.36.0
 
 # -----------------------------
 # Document Processing (PPTX, DOCX, PDF) / NLP Utilities / OCR
@@ -30,14 +31,16 @@ python-pptx>=0.6.23          # PPTX 파일 처리
 python-docx==1.2.0
 pypdf==6.3.0
 pdfplumber==0.11.4           # PDF 텍스트 추출 (MIT License)
-pdf2image>=1.17.0            # PDF → 이미지 변환 (MIT License)
+pdf2image>=1.17.0            # PDF → 이미지 변환(OCR용) (MIT License)
 reportlab>=4.0.7             # PDF 생성 (한글 지원)
 beautifulsoup4==4.14.2
 pillow==11.0.0
 
+# -----------------------------
+# OCR
+# -----------------------------
 paddlepaddle==3.2.2
 paddleocr==3.3.2
-PyMuPDF==1.26.7
 
 # -----------------------------
 # Network
@@ -45,10 +48,16 @@ PyMuPDF==1.26.7
 requests==2.32.5
 httpx==0.28.1
 
+#------------------------------
+# DB
+#------------------------------
+SQLAlchemy==2.0.46
+psycopg[binary]==3.3.2
+
 # -----------------------------
-# Supabase
+# Storage
 # -----------------------------
-supabase==2.24.0
+azure-storage-blob==12.28.0
 
 # -----------------------------
 # Auth / Env
@@ -57,7 +66,14 @@ python-dotenv==1.2.1
 python-jose[cryptography]
 
 # -----------------------------
-# Other (미리 설치되어 있음)
+# Azure Functions
+# -----------------------------
+azure-functions==1.24.0
+
+# -----------------------------
+# Other
 # -----------------------------
 typing-extensions
 email-validator==2.3.0
+numpy>=2.0,<3.0
+pydub>=0.25.1
