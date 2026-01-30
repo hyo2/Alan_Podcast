@@ -1,180 +1,355 @@
-# AI Pods Backend API
+# AI Audiobook Generator
 
-AI 기반 팟캐스트 및 이미지 생성 플랫폼의 백엔드 API 서버입니다. FastAPI 기반으로 구축되었으며, LangGraph를 활용한 AI 파이프라인을 통해 소스 콘텐츠를 팟캐스트로 자동 변환합니다.
+AI 기반 자동 오디오북 생성 시스템입니다. PDF, 문서, URL 등의 입력을 받아 자동으로 팟캐스트 형식의 오디오북을 생성합니다.
 
-## 주요 기능
+## 🎯 주요 기능
 
-- 🎙️ **AI 팟캐스트 생성**: 문서/링크를 입력받아 대화형 팟캐스트 생성
-- 🖼️ **비주얼 콘텐츠**: 타임라인 기반 이미지 자동 생성
-- 👥 **사용자 인증**: Supabase Auth 기반 회원가입/로그인
-- 📁 **프로젝트 관리**: 팟캐스트 프로젝트별 소스 및 결과물 관리
-- ☁️ **클라우드 스토리지**: Supabase Storage를 통한 파일 관리
+### 1. 다양한 입력 소스 지원
 
-## 기술 스택
+- **PDF 문서**: 텍스트 추출 + 이미지 설명 생성
+- **텍스트 파일**: 직접 텍스트 처리
+- **URL**: 웹 페이지 크롤링
+- **주 소스 + 보조 소스**: 메인 콘텐츠와 참고 자료 분리
 
-- **Framework**: FastAPI 0.121.2
-- **AI Pipeline**: LangGraph 1.0.4, LangChain 1.1.0
-- **LLM**: Google Gemini (Vertex AI)
-- **Database**: Supabase (PostgreSQL)
-- **Storage**: Supabase Storage
-- **Auth**: Supabase Auth
+### 2. AI 기반 스크립트 생성
+
+- **LLM**: Vertex AI Gemini 1.5 Pro
+- **스타일**: 강의형 / 대화형
+- **난이도**: 초급 / 중급 / 고급
+- **자동 압축**: 목표 시간에 맞게 스크립트 조정
+
+### 3. 고품질 음성 합성
+
 - **TTS**: Google Cloud Text-to-Speech
+- **화자 구분**: 진행자 / 게스트
+- **Tail Focus V5**: 실시간 발화 단위 병합
+- **출력**: MP3 (192kbps)
 
-## 프로젝트 구조
+### 4. 스트리밍 지원
+
+- **Range Request**: HTTP 206 Partial Content
+- **청크 스트리밍**: 대용량 오디오 효율적 전송
+- **타임스탬프 스크립트**: 자막 형식 트랜스크립트
+
+## 🏗️ 시스템 아키텍처
+
+```
+Client → FastAPI → SessionService → LangGraph Pipeline → Storage
+                                   ↓
+                              Vertex AI (Gemini)
+                              Google Cloud TTS
+                              FFmpeg
+```
+
+### LangGraph Pipeline (6단계)
+
+1. **extract_texts**: 문서에서 텍스트/이미지 추출
+2. **combine_texts**: 텍스트 구조화 및 결합
+3. **generate_script**: AI 스크립트 생성
+4. **generate_audio**: TTS 음성 합성
+5. **merge_audio**: 오디오 병합 (FFmpeg)
+6. **generate_transcript**: 타임스탬프 스크립트 생성
+
+## 🚀 빠른 시작
+
+### 1. 필수 요구사항
+
+- Python 3.11+
+- PostgreSQL 14+
+- FFmpeg 4.x+
+- Google Cloud 프로젝트 (Vertex AI, Cloud TTS 활성화)
+- Azure Storage 계정 (또는 로컬 스토리지 사용)
+
+### 2. 설치
+
+```bash
+# 1. 저장소 클론
+git clone <repository-url>
+cd backend
+
+# 2. 가상 환경 생성
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# 3. 의존성 설치
+pip install -r requirements.txt
+
+# 4. 시스템 의존성 설치 (Ubuntu/Debian)
+sudo apt-get install ffmpeg postgresql-client
+
+# 5. 환경 변수 설정
+cp .env.example .env
+# .env 파일 편집 (아래 참조)
+```
+
+### 3. 환경 변수 설정
+
+`.env` 파일:
+
+```bash
+# Database
+DATABASE_URL=postgresql://user:password@localhost:5432/audiobook
+REPO_BACKEND=postgres
+
+# Storage (개발 환경에서는 local 사용 가능)
+STORAGE_BACKEND=local  # 또는 azure
+BASE_OUTPUT_DIR=./outputs
+# AZURE_STORAGE_CONNECTION_STRING=...
+# AZURE_STORAGE_CONTAINER=audiobook-files
+
+# Google Cloud
+VERTEX_AI_PROJECT_ID=your-gcp-project-id
+VERTEX_AI_REGION=asia-northeast3
+VERTEX_AI_SERVICE_ACCOUNT_FILE=/path/to/service-account.json
+
+# Security
+INTERNAL_SERVICE_TOKEN=your-secret-token-here
+
+# Environment
+ENVIRONMENT=development
+# CORS_ORIGINS=http://localhost:5173
+```
+
+### 4. 데이터베이스 설정
+
+```bash
+# PostgreSQL 데이터베이스 생성
+createdb audiobook
+
+# 테이블 생성 (SQLAlchemy models 기반)
+python -c "from app.db.models import Base; from app.db.db_session import engine; Base.metadata.create_all(engine)"
+```
+
+### 5. 실행
+
+```bash
+# 개발 서버 실행
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+# 또는 production 모드
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+서버 실행 후 접속:
+
+- API 서버: http://localhost:8000
+- API 문서: http://localhost:8000/docs (Swagger UI)
+- Health Check: http://localhost:8000/v1/health
+
+## 📚 API 사용법
+
+### 1. 채널 생성
+
+```bash
+curl -X POST http://localhost:8000/v1/channels \
+  -H "X-Internal-Service-Token: your-secret-token"
+```
+
+응답:
+
+```json
+{
+  "success": true,
+  "data": {
+    "channel_id": "ch_abc123",
+    "created_at": "2024-01-30T12:00:00Z"
+  }
+}
+```
+
+### 2. 파일 업로드
+
+```bash
+curl -X POST http://localhost:8000/v1/channels/ch_abc123/sessions/sess_xyz/inputs \
+  -H "X-Internal-Service-Token: your-secret-token" \
+  -F "file=@document.pdf" \
+  -F "role=main"
+```
+
+### 3. 세션 생성 (오디오북 생성 시작)
+
+```bash
+curl -X POST http://localhost:8000/v1/channels/ch_abc123/sessions \
+  -H "X-Internal-Service-Token: your-secret-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "options": {
+      "host1": "김선생",
+      "host2": "이학생",
+      "style": "explain",
+      "duration": 5,
+      "difficulty": "intermediate"
+    }
+  }'
+```
+
+### 4. 상태 확인
+
+```bash
+curl http://localhost:8000/v1/channels/ch_abc123/sessions/sess_xyz \
+  -H "X-Internal-Service-Token: your-secret-token"
+```
+
+응답:
+
+```json
+{
+  "success": true,
+  "data": {
+    "session_id": "sess_xyz",
+    "status": "processing",
+    "current_step": "generate_script",
+    "title": null,
+    "audio_key": null
+  }
+}
+```
+
+### 5. 오디오 스트리밍
+
+```bash
+# 전체 다운로드
+curl http://localhost:8000/v1/channels/ch_abc123/files/audio/sess_xyz/1 \
+  -H "X-Internal-Service-Token: your-secret-token" \
+  -o podcast.mp3
+
+# Range 요청 (부분 스트리밍)
+curl http://localhost:8000/v1/channels/ch_abc123/files/audio/sess_xyz/1 \
+  -H "X-Internal-Service-Token: your-secret-token" \
+  -H "Range: bytes=0-1023" \
+  -o chunk.mp3
+```
+
+## 🔧 개발 가이드
+
+### 프로젝트 구조
 
 ```
 backend/
 ├── app/
-│   ├── main.py                    # FastAPI 앱 진입점
-│   ├── core/                      # 인증, 의존성 관리
-│   ├── routers/                   # API 엔드포인트
-│   │   ├── auth.py               # 회원가입/로그인
-│   │   ├── project.py            # 프로젝트 관리
-│   │   ├── input.py              # 입력 소스 관리
-│   │   ├── output.py             # 팟캐스트 생성/조회
-│   │   ├── voice.py              # TTS 음성 목록
-│   │   └── storage.py            # 파일 URL 생성
-│   ├── services/                  # 외부 서비스 연동
-│   │   ├── supabase_service.py   # Supabase 클라이언트
-│   │   └── langgraph_service.py  # LangGraph 실행
-│   └── langgraph_pipeline/        # AI 파이프라인
-│       ├── graph.py              # LangGraph 워크플로우
-│       ├── state.py              # 상태 관리
-│       ├── podcast/              # 팟캐스트 생성 노드
-│       └── vision/               # 이미지 생성 노드
+│   ├── routers/              # API 엔드포인트
+│   │   ├── channels.py
+│   │   ├── sessions.py
+│   │   ├── streaming.py
+│   │   └── health.py
+│   ├── services/             # 비즈니스 로직
+│   │   ├── session_service.py
+│   │   ├── langgraph_service.py
+│   │   └── storage_service.py
+│   ├── repositories/         # 데이터 액세스
+│   │   ├── postgres/
+│   │   └── memory/
+│   ├── langgraph_pipeline/   # AI 워크플로우
+│   │   └── podcast/
+│   │       ├── graph.py
+│   │       ├── state.py
+│   │       ├── script_generator.py
+│   │       ├── tts_service.py
+│   │       └── audio_processor.py
+│   ├── middleware/           # 미들웨어
+│   │   ├── cors.py
+│   │   └── internal_auth.py
+│   ├── db/                   # 데이터베이스
+│   │   ├── models.py
+│   │   └── db_session.py
+│   └── main.py              # 앱 진입점
+├── outputs/                  # 임시 출력 파일
 ├── requirements.txt
-└── .env
+└── .env.*
 ```
 
-## 설치 및 실행
+### Repository 패턴
 
-### 1. 환경 설정
+시스템은 Memory와 Postgres 백엔드를 모두 지원합니다:
 
-Python 3.11 이상 필요
+```python
+# 환경 변수로 전환
+REPO_BACKEND=postgres  # 또는 memory
+```
+
+- **Memory**: 개발/테스트용 (재시작 시 데이터 소실)
+- **Postgres**: Production용 (영구 저장)
+
+### Storage 패턴
+
+```python
+# 환경 변수로 전환
+STORAGE_BACKEND=local   # 또는 azure
+```
+
+- **Local**: 개발용 (로컬 파일시스템)
+- **Azure**: Production용 (Azure Blob Storage)
+
+## 🧪 테스트
 
 ```bash
-# 가상환경 생성
-python -m venv venv
+# 단위 테스트
+pytest tests/
 
-# 가상환경 활성화 (Windows)
-venv\Scripts\activate
+# 특정 테스트
+pytest tests/test_session_service.py
 
-# 가상환경 활성화 (Mac/Linux)
-source venv/bin/activate
-
-# 의존성 설치
-pip install -r requirements.txt
+# 커버리지
+pytest --cov=app tests/
 ```
 
-### 2. 환경 변수 설정
+## 📊 모니터링
 
-`.env` 파일 생성:
+### 로그 확인
 
 ```bash
-# Supabase
-SUPABASE_URL=your_supabase_url
-SUPABASE_SERVICE_KEY=your_service_role_key
+# 실시간 로그
+tail -f logs/app.log
 
-# Google Cloud / Vertex AI
-VERTEX_AI_PROJECT_ID=your_gcp_project_id
-VERTEX_AI_REGION=us-central1
-VERTEX_AI_SERVICE_ACCOUNT_FILE=path/to/service-account.json
-GOOGLE_APPLICATION_CREDENTIALS=path/to/service-account.json
-
-# Frontend
-FRONTEND_URL=http://localhost:5173
+# 에러 로그만
+grep ERROR logs/app.log
 ```
 
-### 3. 서버 실행
+### 세션 상태
+
+세션의 `current_step` 필드로 진행 상황 추적:
+
+- `start` → `extract_complete` → `combine_complete` → `script_complete` → `audio_complete` → `merge_complete` → `complete`
+- `error`: 에러 발생 시
+
+## 🐛 트러블슈팅
+
+### 1. FFmpeg 관련 에러
 
 ```bash
-# 개발 모드 (hot reload)
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# FFmpeg 설치 확인
+ffmpeg -version
+
+# Ubuntu/Debian
+sudo apt-get install ffmpeg
+
+# macOS
+brew install ffmpeg
 ```
 
-서버 실행 후:
-
-- API: `http://localhost:8000`
-- **Swagger 문서**: `http://localhost:8000/docs`
-
-## API 문서
-
-### Swagger UI 사용법
-
-1. 서버 실행 후 `http://localhost:8000/docs` 접속
-2. 각 엔드포인트를 클릭하여 상세 정보 확인
-3. "Try it out" 버튼으로 직접 API 테스트 가능
-4. 우측 상단 "Authorize" 버튼으로 JWT 토큰 설정 가능
-
-### 주요 엔드포인트
-
-#### 인증 (Auth)
-
-- `POST /api/users/signup` - 회원가입
-- `POST /api/users/login` - 로그인
-
-#### 프로젝트 (Projects)
-
-- `GET /api/projects/?user_id={uuid}` - 프로젝트 목록
-- `POST /api/projects/create` - 새 프로젝트 생성
-- `DELETE /api/projects/{project_id}?user_id={uuid}` - 프로젝트 삭제
-
-#### 입력 소스 (Inputs)
-
-- `GET /api/inputs/list?project_id={id}` - 소스 목록
-- `POST /api/inputs/upload` - 파일/링크 업로드
-- `DELETE /api/inputs/{input_id}` - 소스 삭제
-
-#### 팟캐스트 생성 (Outputs)
-
-- `GET /api/outputs/list?project_id={id}` - 결과물 목록
-- `GET /api/outputs/{output_id}` - 결과물 상세 조회
-- `GET /api/outputs/{output_id}/status` - 생성 상태 확인
-- `POST /api/outputs/generate` - 팟캐스트 생성 요청
-- `DELETE /api/outputs/{output_id}` - 결과물 삭제
-
-#### 음성 (Voices)
-
-- `GET /api/voices/` - TTS 음성 목록
-
-#### 스토리지 (Storage)
-
-- `GET /api/storage/signed-url?path={path}` - Signed URL 생성
-
-## LangGraph 파이프라인
-
-AI 팟캐스트 생성은 다음 단계로 진행됩니다:
-
-1. **소스 추출** (Extractors): 문서/링크에서 텍스트 추출
-2. **스크립트 생성** (Script Generator): 대화형 팟캐스트 스크립트 작성
-3. **TTS 변환** (TTS Service): Google Cloud TTS로 음성 변환
-4. **오디오 처리** (Audio Processor): 여러 음성 파일 병합
-5. **이미지 생성** (Vision Pipeline):
-   - 메타데이터 추출
-   - 스크립트 파싱
-   - 이미지 기획
-   - 프롬프트 생성
-   - 이미지 생성 (Imagen)
-   - 타임라인 매핑
-
-## 트러블슈팅
-
-### Supabase 연결 실패
-
-```bash
-# .env 파일 확인
-echo $SUPABASE_URL
-echo $SUPABASE_SERVICE_KEY
-```
-
-### Google Cloud 인증 오류
+### 2. Google Cloud 인증 에러
 
 ```bash
 # 서비스 계정 파일 권한 확인
-export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
+chmod 600 /path/to/service-account.json
+
+# 환경 변수 설정 확인
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 ```
 
-### CORS 에러
+### 3. PostgreSQL 연결 에러
 
-- `FRONTEND_URL` 환경 변수가 올바른지 확인
-- main.py의 CORS 설정 확인
+```bash
+# 연결 테스트
+psql $DATABASE_URL
+
+# 데이터베이스 존재 확인
+psql -l | grep audiobook
+```
+
+### 4. Azure Blob Storage 연결 에러
+
+```bash
+# Connection String 형식 확인
+# DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net
+```

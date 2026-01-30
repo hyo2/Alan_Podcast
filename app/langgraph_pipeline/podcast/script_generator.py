@@ -493,7 +493,7 @@ class ScriptGenerator:
                 "OCR이 비활성화되어 있거나, PDF가 이미지 기반일 수 있습니다."
             )
 
-        model_name = os.getenv("VERTEX_AI_MODEL_TEXT", "gemini-2.0-flash-exp")
+        model_name = os.getenv("VERTEX_AI_MODEL_TEXT", "gemini-2.5-flash-exp")
 
        # ✅ user_prompt에서 override 추출 → 옵션보다 우선 적용
         duration_min = float(duration)
