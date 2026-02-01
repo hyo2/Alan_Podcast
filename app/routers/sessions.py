@@ -12,6 +12,7 @@ from app.dependencies.repos import (
 )
 from app.services.storage_service import get_storage
 from app.services.session_service import SessionService
+from app.services.queue_service import enqueue_session_job
 from app.utils.response import success_response, error_response
 from app.utils.error_codes import ErrorCodes
 from app.utils.session_helpers import to_iso_z, unwrap_response_tuple
@@ -37,7 +38,6 @@ def _build_storage_prefix(channel_id: str, session_id: str) -> str:
 @router.post("/channels/{channel_id}/sessions")
 async def create_session(
     response: Response,
-    background_tasks: BackgroundTasks,
     channel_id: str = Path(..., description="채널 ID"),
     files: List[UploadFile] = File(None),   # 멀티 파일
     links: str = Form("[]"),               # 멀티 링크(JSON string)
@@ -253,7 +253,7 @@ async def create_session(
         if not main_assigned:
             # 이 경우는 위 검증이 제대로 동작하면 사실상 발생하지 않지만,
             # 예외 케이스 방지를 위해 남겨둠
-            session_repo.update_status(
+            session_repo.update_session_fields(
                 session_id,
                 status="failed",
                 current_step="입력 검증 실패",
@@ -275,19 +275,30 @@ async def create_session(
             current_step="파일 업로드 완료 및 변환 시작",
         ) or session
 
-        # 10) BackgroundTasks 등록
-        service = SessionService(
-            channel_repo=channel_repo,
-            session_repo=session_repo,
-            session_input_repo=session_input_repo,
-            storage=storage,
-        )
-        background_tasks.add_task(
-            service.process_audiobook_generation,
-            session_id=session_id,
-            channel_id=channel_id,
-            options=options,
-        )
+        # 10) Queue 메시지 enqueue (Functions QueueTrigger가 처리)
+        try:
+            enqueue_session_job(
+                session_id=session_id,
+                channel_id=channel_id,
+                options=options,
+                kind="generate",
+            )
+        except Exception as qe:
+            # 큐 enqueue 실패하면 세션을 failed로 바꾸고 에러 응답
+            session_repo.update_session_fields(
+                session_id,
+                status="failed",
+                current_step="큐 등록 실패",
+                error_message=str(qe),
+            )
+            return unwrap_response_tuple(
+                response,
+                error_response(
+                    message=f"작업 큐 등록에 실패했습니다: {str(qe)}",
+                    error_code=ErrorCodes.INTERNAL_ERROR,
+                    status_code=500,
+                ),
+            )
 
         created_at = to_iso_z(session["created_at"])
 

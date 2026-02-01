@@ -26,6 +26,7 @@
     "AZURE_STORAGE_CONNECTION_STRING": "your-connection-string",
     "AZURE_STORAGE_CONTAINER": "your-container",
     "STORAGE_BACKEND": "azure",
+    "AZURE_STORAGE_QUEUE_NAME": "your-queue-jobs",
 
     "BASE_OUTPUT_DIR": "./outputs",
     "FRONTEND_URL": "http://localhost:5173",
