@@ -13,17 +13,15 @@ AI 기반 자동 오디오북 생성 시스템입니다. PDF, 문서, URL 등의
 
 ### 2. AI 기반 스크립트 생성
 
-- **LLM**: Vertex AI Gemini 1.5 Pro
+- **LLM**: Vertex AI Gemini 2.5 flash
 - **스타일**: 강의형 / 대화형
 - **난이도**: 초급 / 중급 / 고급
 - **자동 압축**: 목표 시간에 맞게 스크립트 조정
 
-### 3. 고품질 음성 합성
+### 3. TTS 음성 생성
 
-- **TTS**: Google Cloud Text-to-Speech
-- **화자 구분**: 진행자 / 게스트
-- **Tail Focus V5**: 실시간 발화 단위 병합
-- **출력**: MP3 (192kbps)
+- **TTS**: Vertex AI Gemini TTS 2.5-flash-preview
+- **다중 화자**: 진행자 / 게스트 역할 구분
 
 ### 4. 스트리밍 지원
 
@@ -174,8 +172,8 @@ curl -X POST http://localhost:8000/v1/channels/ch_abc123/sessions \
   -H "Content-Type: application/json" \
   -d '{
     "options": {
-      "host1": "김선생",
-      "host2": "이학생",
+      "host1": "Fenir",
+      "host2": "",
       "style": "explain",
       "duration": 5,
       "difficulty": "intermediate"

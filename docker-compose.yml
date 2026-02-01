@@ -5,7 +5,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: ai-audiobook-api
+    container_name: audiobook
     ports:
       - "4001:80"
     env_file:
@@ -14,6 +14,8 @@ services:
       # Azure Functions 런타임 설정
       - AzureWebJobsScriptRoot=/home/site/wwwroot
       - AzureFunctionsJobHost__Logging__Console__IsEnabled=true
+      - AzureWebJobsFeatureFlags=EnableWorkerIndexing
+      - FUNCTIONS_WORKER_RUNTIME=python
       # UTF-8 인코딩
       - PYTHONIOENCODING=utf-8
       - LANG=C.UTF-8
@@ -26,6 +28,7 @@ services:
       - ./backend/middleware:/home/site/wwwroot/middleware
       - ./backend/function_app.py:/home/site/wwwroot/function_app.py
       - ./backend/config.py:/home/site/wwwroot/config.py
+      - ./backend/host.json:/home/site/wwwroot/host.json
       - ./backend/vertex-ai-service-account.json:/home/site/wwwroot/vertex-ai-service-account.json:ro
       # 출력 파일 영구 저장
       - ./backend/outputs:/home/site/wwwroot/outputs
