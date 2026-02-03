@@ -10,7 +10,6 @@ from typing import Any, Dict, Optional
 
 from azure.storage.queue import QueueClient
 
-
 def _normalize_queue_name(name: str) -> str:
     """
     Azure Queue name rules (핵심만):

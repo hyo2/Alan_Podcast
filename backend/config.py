@@ -130,6 +130,15 @@ class Settings:
                         elif value.startswith("'") and value.endswith("'"):
                             value = value[1:-1]
                         
+                        # 1) .env에 값이 비어 있으면 덮어쓰지 않음
+                        if value == "":
+                            continue
+
+                        # 2) 이미 환경변수에 값이 있으면(docker/env_file/local.settings로 주입됨) 덮어쓰지 않음
+                        existing = os.environ.get(key)
+                        if existing is not None and existing != "":
+                            continue
+                        
                         os.environ[key] = value
         except Exception as e:
             print(f"환경 파일 로드 실패: {e}")

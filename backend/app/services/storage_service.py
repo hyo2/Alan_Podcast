@@ -58,7 +58,7 @@ class AzureBlobStorage:
         props = blob.get_blob_properties()
         return int(props.size)
 
-    # 범위 다운로드 (Azure 진짜 Range)
+    # 범위 다운로드 (Azure의 Range)
     def download_range(self, storage_key: str, start: int, end: int) -> bytes:
         if not storage_key:
             raise ValueError("storage_key is required")
