@@ -32,7 +32,7 @@
 
 ### 2. AI 기반 스크립트 생성
 
-- **LLM**: Google Vertex AI (Gemini 1.5 Pro)
+- **LLM**: Google Vertex AI (Gemini 2.5 flash)
 - **스타일 선택**: 강의형 / 대화형
 - **난이도 설정**: 초급 / 중급 / 고급
 - **자동 압축**: 목표 시간에 맞게 스크립트 조정
@@ -79,8 +79,8 @@
         │                          │
 ┌───────▼────────┐        ┌────────▼─────────────────────────┐
 │  PostgreSQL    │        │    External Services             │
-│  - channels    │        │  - Vertex AI (Gemini 1.5 Pro)   │
-│  - sessions    │        │  - Google Cloud TTS              │
+│  - channels    │        │  - Vertex AI (Gemini 2.5 flash)  │
+│  - sessions    │        │  - Google Cloud Speech           │
 │  - inputs      │        │  - Azure Blob Storage            │
 └────────────────┘        └──────────────────────────────────┘
 ```
@@ -164,27 +164,51 @@ pip install -r requirements.txt
 `.env` 파일 생성:
 
 ```bash
-# Database
-DATABASE_URL=postgresql://user:password@localhost:5432/audiobook
-REPO_BACKEND=postgres # 또는 memory
+# ===== 환경 구분 =====
+ENVIRONMENT=development
 
-# Storage
-STORAGE_BACKEND=azure  # 또는 local
-BASE_OUTPUT_DIR=./outputs
-# AZURE_STORAGE_CONNECTION_STRING=...
-# AZURE_STORAGE_CONTAINER=alan-files
-
-# Google Cloud
-VERTEX_AI_PROJECT_ID=your-gcp-project-id
-VERTEX_AI_REGION=asia-northeast3
-VERTEX_AI_SERVICE_ACCOUNT_FILE=/path/to/service-account.json
-
-# Security
+# ===== 내부 서비스 인증 =====
 INTERNAL_SERVICE_TOKEN=your-secret-token-here
 
-# Environment
-ENVIRONMENT=development
-# CORS_ORIGINS=http://localhost:5173
+# ===== 서버 설정 =====
+PORT=4001
+LOG_LEVEL=INFO
+
+# ===== CORS 설정 =====
+# development: 빈 값 (코드에서 * 사용)
+# staging/production: 허용할 origin (콤마 구분)
+CORS_ORIGINS=
+
+# ===== Vertex AI (Google Cloud) =====
+VERTEX_AI_PROJECT_ID=your-project-id
+VERTEX_AI_REGION=us-central1
+VERTEX_AI_SERVICE_ACCOUNT_FILE=path/to/service-account.json
+VERTEX_AI_MODEL_TEXT=gemini-2.5-flash
+
+# ===== 데이터베이스 =====
+# PostgreSQL 연결
+DATABASE_URL=postgresql://user:password@host:5432/database
+# 저장소 백엔드 - memory/postgres
+REPO_BACKEND=postgres
+
+# ===== 스토리지 =====
+# Azure Blob Storage
+AZURE_STORAGE_CONNECTION_STRING=your-connection-string
+AZURE_STORAGE_CONTAINER=alan-files
+
+# Azure Storage Queue
+AZURE_STORAGE_QUEUE_NAME=ai-audiobook-jobs
+FUNCTIONS_WORKER_RUNTIME=python
+AzureWebJobsStorage=your-connection-string
+
+# 스토리지 백엔드 - azure/local
+STORAGE_BACKEND=azure
+
+# 출력 디렉토리 (로컬 모드)
+BASE_OUTPUT_DIR=./outputs
+
+# 프론트엔드 URL
+FRONTEND_URL=http://localhost:5173
 ````
 
 #### 2.3. 데이터베이스 초기화
@@ -201,14 +225,14 @@ python -c "from app.db.models import Base; from app.db.db_session import engine;
 
 ```bash
 # 개발 모드
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 4001
 
 ```
 
 서버 실행 후:
 
-- API 서버: http://localhost:8000
-- API 문서: http://localhost:8000/docs
+- API 서버: http://localhost:4001
+- API 문서: http://localhost:4001/docs
 
 ---
 
@@ -226,13 +250,13 @@ npm install
 `.env` 파일 생성 (선택사항):
 
 ```bash
-VITE_API_BASE_URL=http://localhost:8000
+VITE_API_BASE_URL=http://localhost:4001
 ```
 
 또는 `src/lib/api.ts`에서 직접 설정:
 
 ```typescript
-export const API_BASE_URL = "http://localhost:8000";
+export const API_BASE_URL = "http://localhost:4001";
 ```
 
 #### 3.3. 프론트엔드 실행
@@ -362,33 +386,7 @@ Header: Range: bytes=0-1023
 Response: 206 Partial Content
 ```
 
-자세한 API 문서: http://localhost:8000/docs (Swagger UI)
-
----
-
-## 🚢 배포 환경
-
-### 박람회 시연 환경 (2026)
-
-| 구분         | 기술                                |
-| ------------ | ----------------------------------- |
-| 배포 플랫폼  | Railway                             |
-| 배포 방식    | Frontend + Backend 통합 (정적 서빙) |
-| 데이터베이스 | Supabase PostgreSQL                 |
-| 파일 저장소  | Supabase Storage                    |
-| UI           | 모바일 웹앱                         |
-
-### 현재 프로젝트 환경
-
-| 구분         | 기술                       |
-| ------------ | -------------------------- |
-| 배포 플랫폼  | (미정)                     |
-| 배포 방식    | Frontend/Backend 분리 권장 |
-| 데이터베이스 | PostgreSQL (별도 호스팅)   |
-| 파일 저장소  | Azure Blob Storage         |
-| UI           | 웹 UI (데스크톱 중심 예정) |
-
----
+자세한 API 문서: http://localhost:4001/docs (Swagger UI)
 
 ## 🔧 개발 가이드
 
@@ -440,25 +438,3 @@ sudo apt-get install ffmpeg
 # macOS
 brew install ffmpeg
 ```
-
-### Google Cloud 인증 에러
-
-```bash
-# 서비스 계정 파일 권한
-chmod 600 /path/to/service-account.json
-
-# 환경 변수 설정
-export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
-```
-
-### CORS 에러
-
-프론트엔드에서 백엔드 API 호출 시 CORS 에러가 발생하면:
-
-1. 백엔드 `.env`에 프론트엔드 URL 추가:
-
-   ```bash
-   CORS_ORIGINS=http://localhost:5173
-   ```
-
-2. 개발 환경에서는 `ENVIRONMENT=development`로 설정하면 모든 Origin 허용

@@ -17,9 +17,6 @@
     "VERTEX_AI_SERVICE_ACCOUNT_FILE": "path/to/service-account.json",
     "VERTEX_AI_MODEL_TEXT": "gemini-2.5-flash",
 
-    "GOOGLE_CLOUD_PROJECT": "",
-    "GCS_BUCKET": "",
-
     "DATABASE_URL": "postgresql://user:password@host:5432/database",
     "REPO_BACKEND": "postgres",
 

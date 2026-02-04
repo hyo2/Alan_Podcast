@@ -51,7 +51,7 @@ def get_vertex_text_model():
         import vertexai
         from vertexai.generative_models import GenerativeModel
 
-        project_id = os.getenv("VERTEX_AI_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
+        project_id = os.getenv("VERTEX_AI_PROJECT_ID")
         location = os.getenv("VERTEX_AI_REGION", "us-central1")
 
         if project_id:
