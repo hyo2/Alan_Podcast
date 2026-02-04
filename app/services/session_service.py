@@ -180,7 +180,7 @@ class SessionService:
                     project_id=google_project_id,
                     region=google_region,
                     sa_file=google_sa_file,
-                    host1=options.get("host1", "진행자"),
+                    host1=options.get("host1", "Fenrir"),
                     host2=options.get("host2", ""),
                     style=options.get("style", "explain"),
                     duration=options.get("duration", 5),

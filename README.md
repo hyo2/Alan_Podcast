@@ -122,24 +122,24 @@ python -c "from app.db.models import Base; from app.db.db_session import engine;
 
 ```bash
 # 개발 서버 실행
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 4001
 
 # 또는 production 모드
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+uvicorn app.main:app --host 0.0.0.0 --port 4001 --workers 4
 ```
 
 서버 실행 후 접속:
 
-- API 서버: http://localhost:8000
-- API 문서: http://localhost:8000/docs (Swagger UI)
-- Health Check: http://localhost:8000/v1/health
+- API 서버: http://localhost:4001
+- API 문서: http://localhost:4001/docs (Swagger UI)
+- Health Check: http://localhost:4001/v1/health
 
 ## 📚 API 사용법
 
 ### 1. 채널 생성
 
 ```bash
-curl -X POST http://localhost:8000/v1/channels \
+curl -X POST http://localhost:4001/v1/channels \
   -H "X-Internal-Service-Token: your-secret-token"
 ```
 
@@ -158,7 +158,7 @@ curl -X POST http://localhost:8000/v1/channels \
 ### 2. 파일 업로드
 
 ```bash
-curl -X POST http://localhost:8000/v1/channels/ch_abc123/sessions/sess_xyz/inputs \
+curl -X POST http://localhost:4001/v1/channels/ch_abc123/sessions/sess_xyz/inputs \
   -H "X-Internal-Service-Token: your-secret-token" \
   -F "file=@document.pdf" \
   -F "role=main"
@@ -167,7 +167,7 @@ curl -X POST http://localhost:8000/v1/channels/ch_abc123/sessions/sess_xyz/input
 ### 3. 세션 생성 (오디오북 생성 시작)
 
 ```bash
-curl -X POST http://localhost:8000/v1/channels/ch_abc123/sessions \
+curl -X POST http://localhost:4001/v1/channels/ch_abc123/sessions \
   -H "X-Internal-Service-Token: your-secret-token" \
   -H "Content-Type: application/json" \
   -d '{
@@ -184,7 +184,7 @@ curl -X POST http://localhost:8000/v1/channels/ch_abc123/sessions \
 ### 4. 상태 확인
 
 ```bash
-curl http://localhost:8000/v1/channels/ch_abc123/sessions/sess_xyz \
+curl http://localhost:4001/v1/channels/ch_abc123/sessions/sess_xyz \
   -H "X-Internal-Service-Token: your-secret-token"
 ```
 
@@ -207,12 +207,12 @@ curl http://localhost:8000/v1/channels/ch_abc123/sessions/sess_xyz \
 
 ```bash
 # 전체 다운로드
-curl http://localhost:8000/v1/channels/ch_abc123/files/audio/sess_xyz/1 \
+curl http://localhost:4001/v1/channels/ch_abc123/files/audio/sess_xyz/1 \
   -H "X-Internal-Service-Token: your-secret-token" \
   -o podcast.mp3
 
 # Range 요청 (부분 스트리밍)
-curl http://localhost:8000/v1/channels/ch_abc123/files/audio/sess_xyz/1 \
+curl http://localhost:4001/v1/channels/ch_abc123/files/audio/sess_xyz/1 \
   -H "X-Internal-Service-Token: your-secret-token" \
   -H "Range: bytes=0-1023" \
   -o chunk.mp3
