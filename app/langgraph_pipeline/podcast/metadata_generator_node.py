@@ -208,6 +208,18 @@ class TextExtractor:
 class ImageDescriptionGenerator:
     """통과된 이미지에 대한 상세 설명 생성 (2-4문장)"""
     
+    
+    def __init__(self):
+        """이미지 설명 생성기 초기화"""
+        self.total_tokens = 0  # ✅ 누적 토큰 수
+        self.description_count = 0  # 생성한 설명 개수
+        
+        # ✅ Gemini 모델 초기화
+        from .improved_hybrid_filter import get_global_model
+        self.model = get_global_model()
+        
+        if self.model is None:
+            print("      ⚠️  Warning: Gemini 모델 초기화 실패 - 이미지 설명 생성 불가")
     def generate_description(
         self, 
         image_bytes: bytes, 
@@ -245,8 +257,25 @@ class ImageDescriptionGenerator:
 
 출력: 명확하고 간결한 2-4문장만.
 """
-                response = model.generate_content([image_part, prompt])
+                
+                if not self.model:
+                    return "이미지 설명 생성 실패: Model not initialized"
+                
+                response = self.model.generate_content([image_part, prompt])
                 description = response.text.strip()
+                
+                # ✅ 토큰 사용량 추적 (usage_metadata 우선)
+                tokens_added = 0
+                try:
+                    # Method 1: response.usage_metadata (가장 정확)
+                    if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                        tokens_added = getattr(response.usage_metadata, 'total_token_count', 0)
+                        if tokens_added > 0:
+                            self.total_tokens += tokens_added
+                            self.description_count += 1
+                except Exception:
+                    pass
+                
                 return description
                 
             except Exception as e:
@@ -343,6 +372,29 @@ class MetadataGenerator:
                 print("   ⚠️  보조자료 없음 (선택 사항)")
             
             print("\n🔧 [3/3] 메타데이터 통합 중...")
+            
+            # ✅ Vision 토큰 통계 수집
+            vision_tokens = {}
+            if hasattr(self.image_filter, 'vision_tokens'):
+                vision_tokens = self.image_filter.vision_tokens.copy()
+                print(f"   [DEBUG] image_filter.vision_tokens = {vision_tokens}")
+            
+            # ✅ 이미지 설명 생성 토큰 추가
+            print(f"   [DEBUG] image_describer.total_tokens = {self.image_describer.total_tokens}")
+            print(f"   [DEBUG] image_describer.description_count = {self.image_describer.description_count}")
+            
+            if self.image_describer.total_tokens > 0:
+                vision_tokens['image_description'] = self.image_describer.total_tokens
+                vision_tokens['description_count'] = self.image_describer.description_count
+                vision_tokens['total'] = vision_tokens.get('total', 0) + self.image_describer.total_tokens
+                print(f"   [DEBUG] vision_tokens after adding image_description = {vision_tokens}")
+            
+            # ✅ 비용 계산
+            if vision_tokens.get('total', 0) > 0:
+                from .pricing import calculate_vision_cost, format_cost
+                vision_cost = calculate_vision_cost(vision_tokens['total'])
+                vision_tokens['cost_usd'] = vision_cost
+            
             metadata = {
                 "metadata_version": "1.0",
                 "created_at": datetime.now().isoformat(),
@@ -365,14 +417,34 @@ class MetadataGenerator:
             if supplementary_metadata:
                 total_supp_pages = sum(s['total_pages'] for s in supplementary_metadata)
                 print(f"📚 보조자료 페이지: {total_supp_pages}개")
+            
+            # ✅ Vision 토큰 통계 출력
+            if vision_tokens:
+                print(f"\n💰 Vision API 사용 통계:")
+                if 'keyword_extraction' in vision_tokens:
+                    print(f"   📝 키워드 추출: {vision_tokens['keyword_extraction']:,} tokens")
+                if 'image_filtering' in vision_tokens:
+                    print(f"   🔍 이미지 필터링: {vision_tokens['image_filtering']:,} tokens")
+                if 'image_description' in vision_tokens:
+                    print(f"   📸 이미지 설명 생성: {vision_tokens['image_description']:,} tokens ({vision_tokens['description_count']}개)")
+                if 'total' in vision_tokens:
+                    print(f"   📊 Total: {vision_tokens['total']:,} tokens")
+                if 'cost_usd' in vision_tokens:
+                    print(f"   💵 비용: {format_cost(vision_tokens['cost_usd'])}")
+            
             print(f"{'='*120}\n")
             
-            return str(output_path)
+            # ✅ vision_tokens와 함께 반환
+            return {
+                "metadata_path": str(output_path),
+                "vision_tokens": vision_tokens
+            }
     
     def _process_primary_source(self, file_path: str) -> Dict[str, Any]:
         """
         주강의자료 처리
         ✅ TXT/URL 지원 추가
+        ✅ PPTX 직접 텍스트 추출 (PDF 변환 없이)
         """
         file_path_str = str(file_path)
         
@@ -388,44 +460,78 @@ class MetadataGenerator:
         
         print(f"   📄 파일: {display_name} ({original_file_type})")
         
-        # 1. 파일 변환 (TXT/URL도 PDF로 변환됨)
-        print(f"   🔄 파일 처리 중...")
-        processed_path = self.converter.convert(file_path_str)
-        
-        # 2. 텍스트 추출
-        print(f"   📝 텍스트 추출 중...")
-        text_data = self.text_extractor.extract_with_markers(processed_path, prefix="MAIN")
-        print(f"   ✅ 텍스트 추출 완료: {len(text_data['full_text'])}자")
-        
-        # 3. 이미지 필터링
-        print(f"   🖼️  이미지 처리 중...")
-        
-        filtered_images = []
-        keywords = []
-        
-        # TXT/URL은 이미지 없음
-        if original_file_type in ['txt', 'url']:
-            print(f"      → TXT/URL은 이미지 없음, 건너뛰기")
-            all_images = []
-        
-        elif original_file_type == 'pptx':
+        # ✅ PPTX는 직접 텍스트 추출 (PDF 변환 시 한글 깨짐 방지)
+        if original_file_type == 'pptx':
+            print(f"   📝 PPTX 직접 텍스트 추출 중... (PDF 변환 건너뜀)")
+            from pptx import Presentation
+            
+            prs = Presentation(file_path_str)
+            pages_text = []
+            total_pages = 0
+            
+            for slide_num, slide in enumerate(prs.slides, 1):
+                total_pages += 1
+                
+                # 슬라이드 제목 추출
+                title = "No Title"
+                if slide.shapes.title and slide.shapes.title.text.strip():
+                    title = slide.shapes.title.text.strip()[:50]
+                
+                # 페이지 마커
+                pages_text.append(f"[MAIN-PAGE {slide_num}: {title}]")
+                
+                # 슬라이드 내용 추출
+                for shape in slide.shapes:
+                    if hasattr(shape, "text") and shape.text.strip():
+                        pages_text.append(shape.text.strip())
+                
+                pages_text.append("")  # 슬라이드 구분
+            
+            full_text = "\n".join(pages_text)
+            print(f"   ✅ 텍스트 추출 완료: {len(full_text)}자, {total_pages}페이지")
+            
+            # 이미지는 PPTX 원본에서 추출
+            print(f"   🖼️  이미지 처리 중...")
             print(f"      → PPTX 원본에서 직접 추출")
             self.image_filter.extract_keywords_from_document(file_path_str)
             keywords = self.image_filter.document_keywords
             all_images = self._extract_images_from_pptx(file_path_str)
             
-        elif original_file_type in ['docx', 'pdf']:
-            print(f"      → PDF에서 이미지 추출")
-            self.image_filter.extract_keywords_from_document(processed_path)
-            keywords = self.image_filter.document_keywords
-            extractor = UniversalImageExtractor()
-            all_images = extractor.extract(processed_path)
-        
         else:
-            print(f"   ⚠️  지원하지 않는 형식: {original_file_type}")
-            all_images = []
+            # 기존 방식: PDF 변환
+            print(f"   🔄 파일 처리 중...")
+            processed_path = self.converter.convert(file_path_str)
+            
+            # 2. 텍스트 추출
+            print(f"   📝 텍스트 추출 중...")
+            text_data = self.text_extractor.extract_with_markers(processed_path, prefix="MAIN")
+            full_text = text_data['full_text']
+            total_pages = text_data['total_pages']
+            print(f"   ✅ 텍스트 추출 완료: {len(full_text)}자")
+            
+            # 3. 이미지 필터링
+            print(f"   🖼️  이미지 처리 중...")
+            
+            # TXT/URL은 이미지 없음
+            if original_file_type in ['txt', 'url']:
+                print(f"      → TXT/URL은 이미지 없음, 건너뛰기")
+                all_images = []
+                keywords = []
+            
+            elif original_file_type in ['docx', 'pdf']:
+                print(f"      → PDF에서 이미지 추출")
+                self.image_filter.extract_keywords_from_document(processed_path)
+                keywords = self.image_filter.document_keywords
+                extractor = UniversalImageExtractor()
+                all_images = extractor.extract(processed_path)
+            
+            else:
+                print(f"   ⚠️  지원하지 않는 형식: {original_file_type}")
+                all_images = []
+                keywords = []
         
-        # 4. 필터링 실행
+        # 4. 필터링 실행 (공통)
+        filtered_images = []
         if all_images:
             print(f"   🔍 {len(all_images)}개 이미지 발견, 필터링 시작...")
 
@@ -457,12 +563,18 @@ class MetadataGenerator:
         if filtered_images:
             print(f"   📝 이미지 설명 생성 중... (0/{len(filtered_images)})", end='', flush=True)
             
+            # ✅ 이전 토큰 수 저장 (각 이미지당 토큰 추적용)
+            prev_tokens = self.image_describer.total_tokens
+            
             for i, img_meta in enumerate(filtered_images, 1):
                 description = self.image_describer.generate_description(
                     img_meta.image_bytes,
                     img_meta.adjacent_text,
                     keywords
                 )
+                
+                # ✅ 이번 이미지 설명 생성에 사용된 토큰 계산
+                current_tokens = self.image_describer.total_tokens - prev_tokens
                 
                 page_title = self._extract_page_title(
                     img_meta.slide_title,
@@ -478,13 +590,27 @@ class MetadataGenerator:
                     "area_percentage": img_meta.area_percentage
                 })
                 
-                print(f"\r   📝 이미지 설명 생성 중... ({i}/{len(filtered_images)})", end='', flush=True)
+                # ✅ 진행 상황과 함께 토큰 정보 출력
+                if current_tokens > 0:
+                    print(f"\r   📝 이미지 설명 생성 중... ({i}/{len(filtered_images)}) - #{i}: {current_tokens:,} tokens", end='', flush=True)
+                else:
+                    print(f"\r   📝 이미지 설명 생성 중... ({i}/{len(filtered_images)})", end='', flush=True)
+                
+                # 다음 이미지를 위해 prev_tokens 업데이트
+                prev_tokens = self.image_describer.total_tokens
             
             print()
             
             print(f"\n   {'='*80}")
             print(f"   📊 이미지 설명 생성 완료")
             print(f"      - 처리된 이미지: {len(filtered_images)}개")
+            # ✅ 총 토큰 수 출력            
+            if self.image_describer.total_tokens > 0:
+                avg_tokens = self.image_describer.total_tokens / len(filtered_images) if len(filtered_images) > 0 else 0
+                print(f"      - 총 토큰: {self.image_describer.total_tokens:,} tokens")
+                print(f"      - 평균: {avg_tokens:.0f} tokens/image")
+            else:
+                print(f"      ⚠️  토큰 정보 없음 (usage_metadata 미지원 가능성)")
             print(f"   {'='*80}\n")
 
         # 6. 통계
@@ -493,11 +619,11 @@ class MetadataGenerator:
         
         return {
             "role": "main",
-            "filename": display_name if original_file_type == 'url' else file_path_obj.name,
+            "filename": display_name if original_file_type == 'url' else (file_path_obj.name if file_path_obj else display_name),
             "file_type": original_file_type,
-            "total_pages": text_data['total_pages'],
+            "total_pages": total_pages,
             "content": {
-                "full_text": text_data['full_text']
+                "full_text": full_text
             },
             "filtered_images": filtered_image_metadata,
             "statistics": {
@@ -508,12 +634,17 @@ class MetadataGenerator:
         }
     
     def _process_supplementary_source(self, file_path: str, order: int) -> Dict[str, Any]:
+        """
+        보조자료 처리
+        ✅ PPTX 직접 텍스트 추출 (PDF 변환 없이)
+        """
         file_path_str = str(file_path)
         
         # URL과 파일 구분
         if file_path_str.startswith(('http://', 'https://')):
             file_type = 'url'
             display_name = 'Web Content'
+            file_path_obj = None
         else:
             file_path_obj = Path(file_path)
             file_type = file_path_obj.suffix.lower().replace('.', '')
@@ -521,21 +652,56 @@ class MetadataGenerator:
         
         print(f"   📚 보조자료 {order}: {display_name} ({file_type})")
         
-        print(f"      🔄 PDF 변환 중...")
-        pdf_path = self.converter.convert(file_path_str)
-        
-        print(f"      📝 텍스트 추출 중...")
-        text_data = self.text_extractor.extract_with_markers(pdf_path, prefix=f"SUPP{order}")
-        
-        print(f"      ✅ 완료 ({text_data['total_pages']}페이지)")
+        # ✅ PPTX는 직접 텍스트 추출 (PDF 변환 건너뜀)
+        if file_type == 'pptx':
+            print(f"      📝 PPTX 직접 텍스트 추출 중... (PDF 변환 건너뜀)")
+            from pptx import Presentation
+            
+            prs = Presentation(file_path_str)
+            pages_text = []
+            total_pages = 0
+            
+            for slide_num, slide in enumerate(prs.slides, 1):
+                total_pages += 1
+                
+                # 슬라이드 제목 추출
+                title = "No Title"
+                if slide.shapes.title and slide.shapes.title.text.strip():
+                    title = slide.shapes.title.text.strip()[:50]
+                
+                # 페이지 마커
+                pages_text.append(f"[SUPP{order}-PAGE {slide_num}: {title}]")
+                
+                # 슬라이드 내용 추출
+                for shape in slide.shapes:
+                    if hasattr(shape, "text") and shape.text.strip():
+                        pages_text.append(shape.text.strip())
+                
+                pages_text.append("")  # 슬라이드 구분
+            
+            full_text = "\n".join(pages_text)
+            print(f"      ✅ 완료 ({total_pages}페이지)")
+            
+        else:
+            # 기존 방식: PDF 변환
+            print(f"      🔄 PDF 변환 중...")
+            pdf_path = self.converter.convert(file_path_str)
+            
+            print(f"      📝 텍스트 추출 중...")
+            text_data = self.text_extractor.extract_with_markers(pdf_path, prefix=f"SUPP{order}")
+            
+            full_text = text_data['full_text']
+            total_pages = text_data['total_pages']
+            
+            print(f"      ✅ 완료 ({total_pages}페이지)")
         
         return {
             "order": order,
             "filename": display_name,
             "file_type": file_type,
-            "total_pages": text_data['total_pages'],
+            "total_pages": total_pages,
             "content": {
-                "full_text": text_data['full_text']
+                "full_text": full_text
             }
         }
     

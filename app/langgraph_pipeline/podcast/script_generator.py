@@ -16,6 +16,7 @@ from .script.compression import compress_script_once
 from .script.postprocess import hard_cap_fallback, continue_script_fallback, expand_script_fallback, expand_middle_content
 from .script.structure_analyzer import analyze_script_structure
 from .utils import target_char_budget
+from .pricing import calculate_llm_cost, format_cost
 
 from sqlalchemy.orm import Session
 from .prompt_service import PromptTemplateService
@@ -172,9 +173,16 @@ def _generate_with_retry(
     """재생성 기반 길이 조정
     
     Returns:
-        tuple: (title, script_text, candidates_history)
+        tuple: (title, script_text, candidates_history, usage_metadata)
     """
     import time
+    
+    
+    # ✅ 토큰 사용량 추적
+    total_input_tokens = 0
+    total_output_tokens = 0
+    total_tokens = 0
+    attempts_detail = []  # ✅ 시도별 상세 내역
     
     candidates = []
     
@@ -294,6 +302,35 @@ def _generate_with_retry(
         for retry_429 in range(max_retries_for_429):
             try:
                 response = model.generate_content(prompt, generation_config=generation_config)
+                
+                # ✅ 시도별 상세 토큰 로깅
+                if hasattr(response, 'usage_metadata'):
+                    usage = response.usage_metadata
+                    
+                    # 토큰 누적
+                    total_input_tokens += usage.prompt_token_count
+                    total_output_tokens += usage.candidates_token_count
+                    total_tokens += usage.total_token_count
+                    
+                    # ✅ 시도별 상세 내역 저장
+                    attempts_detail.append({
+                        "attempt": attempt,
+                        "input_tokens": usage.prompt_token_count,
+                        "output_tokens": usage.candidates_token_count,
+                        "total_tokens": usage.total_token_count
+                    })
+                    
+                    # logger와 print 둘 다 사용
+                    logger.info(f"📝 시도 {attempt}/{max_attempts}:")
+                    logger.info(f"   Input:  {usage.prompt_token_count:,} tokens")
+                    logger.info(f"   Output: {usage.candidates_token_count:,} tokens")
+                    logger.info(f"   Total:  {usage.total_token_count:,} tokens")
+                    
+                    print(f"📝 시도 {attempt}/{max_attempts}:")
+                    print(f"   Input:  {usage.prompt_token_count:,} tokens")
+                    print(f"   Output: {usage.candidates_token_count:,} tokens")
+                    print(f"   Total:  {usage.total_token_count:,} tokens")
+                
                 raw_text = extract_text_fn(response).strip()
                 
                 if not raw_text:
@@ -319,15 +356,47 @@ def _generate_with_retry(
                 
                 candidates.append((script_text, ratio, title))
                 
-                logger.info(
-                    f"[{attempt}차 결과] {current_len}자 ({ratio:.1%}), "
-                    f"범위: {target_min_ratio:.1%}~{target_max_ratio:.1%}"
-                )
+                # ✅ 상세 결과 로깅
+                logger.info(f"   결과: {current_len:,}자 / 목표 {budget:,}자 ({ratio:.1%})")
+                logger.info(f"   목표 범위: {target_min_ratio:.1%}~{target_max_ratio:.1%}")
+                
+                print(f"   결과: {current_len:,}자 / 목표 {budget:,}자 ({ratio:.1%})")
+                print(f"   목표 범위: {target_min_ratio:.1%}~{target_max_ratio:.1%}")
                 
                 # 존치 범위 진입 시 즉시 채택
                 if target_min_ratio <= ratio <= target_max_ratio:
-                    logger.info(f"✅ [{attempt}차 성공] 존치 범위 진입 - 즉시 채택")
-                    return title, script_text, candidates
+                    logger.info(f"   ✅ 성공! 목표 범위 진입 - 즉시 채택")
+                    print(f"   ✅ 성공! 목표 범위 진입 - 즉시 채택")
+                    # ✅ early return도 usage_metadata 포함
+                    usage_metadata = {
+                        "input_tokens": total_input_tokens,
+                        "output_tokens": total_output_tokens,
+                        "total_tokens": total_tokens,
+                        "attempts": attempt,
+                        "attempts_detail": attempts_detail  # ✅ 시도별 상세 내역
+                    }
+                    
+                    # 최종 요약
+                    logger.info(f"\n💰 LLM 토큰 사용량 요약:")
+                    logger.info(f"   총 시도: {attempt}회")
+                    logger.info(f"   Input:  {total_input_tokens:,} tokens")
+                    logger.info(f"   Output: {total_output_tokens:,} tokens")
+                    logger.info(f"   Total:  {total_tokens:,} tokens")
+                    
+                    print(f"\n💰 LLM 토큰 사용량 요약:")
+                    print(f"   총 시도: {attempt}회")
+                    print(f"   Input:  {total_input_tokens:,} tokens")
+                    print(f"   Output: {total_output_tokens:,} tokens")
+                    print(f"   Total:  {total_tokens:,} tokens")
+                    
+                    return title, script_text, candidates, usage_metadata
+                else:
+                    if ratio < target_min_ratio:
+                        logger.info(f"   ❌ 실패: 길이 부족 ({ratio:.1%} < {target_min_ratio:.1%})")
+                        print(f"   ❌ 실패: 길이 부족 ({ratio:.1%} < {target_min_ratio:.1%})")
+                    else:
+                        logger.info(f"   ❌ 실패: 길이 초과 ({ratio:.1%} > {target_max_ratio:.1%})")
+                        print(f"   ❌ 실패: 길이 초과 ({ratio:.1%} > {target_max_ratio:.1%})")
                 
                 # 성공했으면 429 재시도 루프 탈출
                 break
@@ -372,10 +441,32 @@ def _generate_with_retry(
     
     logger.warning(
         f"🔄 [최선 선택] {max_attempts}회 시도 후 1.0 최근접 선택: "
-        f"{measure(best_script)}자 ({best_ratio:.1%})"
+        f"{measure(best_script):,}자 ({best_ratio:.1%})"
     )
     
-    return best_title, best_script, candidates
+    # ✅ 토큰 정보 반환
+    usage_metadata = {
+        "input_tokens": total_input_tokens,
+        "output_tokens": total_output_tokens,
+        "total_tokens": total_tokens,
+        "attempts": max_attempts,
+        "attempts_detail": attempts_detail  # ✅ 시도별 상세 내역
+    }
+    
+    # 최종 요약
+    logger.info(f"\n💰 LLM 토큰 사용량 요약:")
+    logger.info(f"   총 시도: {max_attempts}회 (전체 시도 완료)")
+    logger.info(f"   Input:  {total_input_tokens:,} tokens")
+    logger.info(f"   Output: {total_output_tokens:,} tokens")
+    logger.info(f"   Total:  {total_tokens:,} tokens")
+    
+    print(f"\n💰 LLM 토큰 사용량 요약:")
+    print(f"   총 시도: {max_attempts}회 (전체 시도 완료)")
+    print(f"   Input:  {total_input_tokens:,} tokens")
+    print(f"   Output: {total_output_tokens:,} tokens")
+    print(f"   Total:  {total_tokens:,} tokens")
+    
+    return best_title, best_script, candidates, usage_metadata
 
 
 class ScriptGenerator:
@@ -570,7 +661,7 @@ class ScriptGenerator:
             logger.info(f"Tolerance: {min_ratio:.1%}~{max_ratio:.1%}")
             logger.info("=" * 80)
             
-            title, script_text, candidates = _generate_with_retry(
+            title, script_text, candidates, llm_usage = _generate_with_retry(
                 model=model,
                 combined_text=combined_text,
                 host_name=host_name,
@@ -591,15 +682,20 @@ class ScriptGenerator:
             )
             
             # ===== usage 메타데이터 집계 =====
-            # candidates에서 토큰 사용량을 추출할 수 없으므로 임시로 0으로 설정
-            # 실제로는 _generate_with_retry에서 반환해야 함
-            input_tokens = 0
-            output_tokens = 0
-            total_tokens = 0
-            total_cost = 0.0
+            # ✅ LLM 비용 계산 (환경변수 기반)
+            input_tokens = llm_usage.get('input_tokens', 0)
+            output_tokens = llm_usage.get('output_tokens', 0)
+            total_cost = calculate_llm_cost(input_tokens, output_tokens)
+            
+            # llm_usage에 cost 추가
+            usage_with_cost = {**llm_usage, "cost_usd": total_cost}
             
             logger.info(f"[재생성 완료] 최종 선택: {measure(script_text)}자")
             logger.info(f"[시도 이력] 총 {len(candidates)}회 시도")
+            logger.info(f"[토큰 사용] Input: {input_tokens:,}, Output: {output_tokens:,}, Total: {llm_usage.get('total_tokens', 0):,}")
+            logger.info(f"[비용] {format_cost(total_cost)}")
+            
+            print(f"💵 LLM 비용: {format_cost(total_cost)}")
             
             # ===== 최종 검증 및 보정 (간소화) =====
             current_len = measure(script_text)
@@ -674,12 +770,7 @@ class ScriptGenerator:
                 "title": title,
                 "script": script_text,
                 "usage": {
-                    "script_generation": {
-                        "input_tokens": input_tokens,
-                        "output_tokens": output_tokens,
-                        "total_tokens": total_tokens,
-                        "cost_usd": total_cost
-                    }
+                    "script_generation": usage_with_cost
                 }
             }
            
