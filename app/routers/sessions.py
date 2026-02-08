@@ -10,6 +10,8 @@ from app.dependencies.repos import (
     get_session_repo,
     get_session_input_repo,
 )
+from app.dependencies.auth import require_access
+
 from app.services.storage_service import get_storage
 from app.services.session_service import SessionService
 from app.services.queue_service import enqueue_session_job
@@ -17,7 +19,7 @@ from app.utils.response import success_response, error_response
 from app.utils.error_codes import ErrorCodes
 from app.utils.session_helpers import to_iso_z, unwrap_response_tuple
 
-router = APIRouter(prefix="/v1", tags=["sessions"])
+router = APIRouter(prefix="/v1", tags=["sessions"], dependencies=[Depends(require_access)],)
 
 ALLOWED_EXTS = {".pdf", ".docx", ".pptx", ".txt"}
 
@@ -39,7 +41,7 @@ def _build_storage_prefix(channel_id: str, session_id: str) -> str:
 async def create_session(
     response: Response,
     channel_id: str = Path(..., description="채널 ID"),
-    files: List[UploadFile] = File(None),   # 멀티 파일
+    files: List[UploadFile] = File(None),  # 멀티 파일
     links: str = Form("[]"),               # 멀티 링크(JSON string)
     main_kind: str = Form(...),            # 주 강의자료 형식 ("file" | "link")
     main_index: int = Form(...),           # 주 강의자료 index (0-based index)
@@ -53,6 +55,7 @@ async def create_session(
     session_input_repo=Depends(get_session_input_repo),
     storage=Depends(get_storage),
 ):
+    """세션 생성"""
     # 1) 채널 확인
     ch = channel_repo.get_channel(channel_id)
     if not ch:

@@ -15,12 +15,9 @@ from io import BytesIO
 # Document processing
 from docx import Document as DocxDocument
 from pptx import Presentation
-from pdf2image import convert_from_path
-from PIL import Image
 
 import logging
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -564,9 +561,10 @@ class DocumentConverterNode:
 if __name__ == "__main__":
     import sys
     
-    print("\n" + "="*120)
-    print("🎯 Document Converter Node")
-    print("="*120)
+    logger.warning("이건 보이나?")
+    logger.info("\n" + "="*120)
+    logger.info("🎯 Document Converter Node")
+    logger.info("="*120)
     
     # CLI 인자가 있으면 그것 사용
     if len(sys.argv) > 1:
@@ -574,32 +572,32 @@ if __name__ == "__main__":
         
         if not source_file.startswith('http'):
             if not os.path.exists(source_file):
-                print(f"\n❌ 파일을 찾을 수 없습니다: {source_file}")
+                logger.error(f"\n❌ 파일을 찾을 수 없습니다: {source_file}")
                 sys.exit(1)
         
         converter = DocumentConverterNode(output_dir="./test_output")
         
         try:
             output = converter.convert(source_file)
-            print(f"\n✓ 변환 완료: {output}")
+            logger.info(f"\n✓ 변환 완료: {output}")
         except Exception as e:
-            print(f"\n✗ 변환 실패: {e}")
+            logger.error(f"\n✗ 변환 실패: {e}")
             import traceback
             traceback.print_exc()
             sys.exit(1)
     
     else:
         # CLI 인자 없으면 사용법 표시
-        print("\n사용법:")
-        print("  python document_converter_node.py <파일경로 또는 URL>")
-        print("\n✅ 지원 형식:")
-        print("  - PDF (원본 복사)")
-        print("  - DOCX (LibreOffice 변환)")
-        print("  - PPTX (LibreOffice 변환)")
-        print("  - TXT (텍스트 → PDF)")
-        print("  - URL (웹페이지 크롤링)")
-        print("\n예제:")
-        print("  python document_converter_node.py sample.docx")
-        print("  python document_converter_node.py notes.txt")
-        print("  python document_converter_node.py https://example.com")
-        print("="*120 + "\n")
+        logger.info("\n사용법:")
+        logger.info("  python document_converter_node.py <파일경로 또는 URL>")
+        logger.info("\n✅ 지원 형식:")
+        logger.info("  - PDF (원본 복사)")
+        logger.info("  - DOCX (LibreOffice 변환)")
+        logger.info("  - PPTX (LibreOffice 변환)")
+        logger.info("  - TXT (텍스트 → PDF)")
+        logger.info("  - URL (웹페이지 크롤링)")
+        logger.info("\n예제:")
+        logger.info("  python document_converter_node.py sample.docx")
+        logger.info("  python document_converter_node.py notes.txt")
+        logger.info("  python document_converter_node.py https://example.com")
+        logger.info("="*120 + "\n")

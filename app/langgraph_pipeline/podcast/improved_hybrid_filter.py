@@ -23,7 +23,34 @@ from typing import List, Dict
 from pptx import Presentation
 from vertexai.generative_models import Part
 import logging
+import sys
 logger = logging.getLogger(__name__)
+
+def _log(*args, level: str | None = None, exc_info: bool = False, end: str = '\n', flush: bool = False) -> None:
+    """
+     logger 기반 로그 (환경별 LOG_LEVEL 적용).
+     - 기본 level: DEBUG
+     - end/flush를 쓰는 진행형 출력(end != '\\n' 또는 flush=True)은 print 유지
+    """
+    msg = " ".join(str(a) for a in args).rstrip() if args else ""
+    # 진행형 출력은 그대로 stdout로 (기존 UX 유지)
+    if end != "\n" or flush:
+        print(msg, end=end, flush=flush)
+        return
+
+    lvl = (level or "DEBUG").upper()
+    if lvl == "DEBUG":
+        logger.debug(msg, exc_info=exc_info)
+    elif lvl == "INFO":
+        logger.info(msg, exc_info=exc_info)
+    elif lvl in ("WARN", "WARNING"):
+        logger.warning(msg, exc_info=exc_info)
+    elif lvl == "ERROR":
+        logger.error(msg, exc_info=exc_info)
+    elif lvl in ("CRITICAL", "FATAL"):
+        logger.critical(msg, exc_info=exc_info)
+    else:
+        logger.debug(msg, exc_info=exc_info)
 
 def _resolve_vertex_sa_file() -> str | None:
     # 프로젝트에서 쓰는 키 우선순위
@@ -139,10 +166,87 @@ class UniversalImageExtractor:
         
         return metadata_list
     
+    def _safe_parse_paddleocr_result(self, ocr_result):
+        """
+        PaddleOCR v3~v5 결과를 안전하게 파싱
+        반환: List[Dict] -> {text, bbox, confidence}
+        """
+        parsed = []
+
+        if not ocr_result:
+            return parsed
+
+        # PaddleOCR는 보통 [result] 형태로 한 번 더 감싸짐
+        if isinstance(ocr_result, list) and len(ocr_result) == 1 and isinstance(ocr_result[0], list):
+            ocr_result = ocr_result[0]
+
+        for item in ocr_result:
+            try:
+                # ✅ Case 1: dict 형태 (PaddleOCR v5 / PaddleX)
+                if isinstance(item, dict):
+                    text = item.get("text", "").strip()
+                    bbox = item.get("points") or item.get("bbox")
+                    conf = item.get("confidence") or item.get("score")
+
+                # ✅ Case 2: classic list 형태 [[bbox], (text, score)]
+                elif isinstance(item, (list, tuple)):
+                    # ("text", score) 형태
+                    if len(item) == 2 and isinstance(item[0], str):
+                        text = item[0].strip()
+                        bbox = None
+                        conf = item[1]
+
+                    # [[x,y]... , ("text", score)]
+                    elif len(item) >= 2 and isinstance(item[1], (list, tuple)):
+                        bbox = item[0]
+                        text = item[1][0].strip() if len(item[1]) > 0 else ""
+                        conf = item[1][1] if len(item[1]) > 1 else None
+                    else:
+                        continue
+                else:
+                    continue
+
+                if not text:
+                    continue
+
+                parsed.append({
+                    "text": text,
+                    "bbox": bbox,
+                    "confidence": conf
+                })
+
+            except Exception:
+                # 파싱 실패해도 전체 OCR은 살리기
+                continue
+
+        return parsed
+
+    def _normalize_ocr_image(self, pil_img):
+        """
+        PaddleOCR 안정화를 위한 이미지 정규화
+        - RGBA → RGB
+        - Grayscale → RGB
+        - numpy contiguous 보장
+        """
+        from PIL import Image
+        import numpy as np
+
+        if pil_img.mode != "RGB":
+            pil_img = pil_img.convert("RGB")
+
+        img_array = np.array(pil_img)
+
+        # numpy contiguous 보장 (중요)
+        if not img_array.flags['C_CONTIGUOUS']:
+            img_array = np.ascontiguousarray(img_array)
+
+        return img_array
+
+
     def _extract_text_with_ocr(self, pdf_path: str, page_num: int, min_length: int = 100) -> str:
         """
         페이지에서 텍스트 추출 (필요시 OCR)
-        V3: pdfplumber + pdf2image + PaddleOCR
+        V3: pdfplumber + pypdfium2 + PaddleOCR
         """
         # ===== 1. pdfplumber로 먼저 시도 =====
         try:
@@ -160,54 +264,62 @@ class UniversalImageExtractor:
         # ===== 2. 텍스트 부족 → OCR 실행 =====
         try:
             from paddleocr import PaddleOCR
-            from pdf2image import convert_from_path
             import numpy as np
-            
+            from pypdfium2 import PdfDocument
+
             if not hasattr(self, '_ocr_engine'):
                 os.environ['FLAGS_log_level'] = '3'
                 os.environ['PPOCR_SHOW_LOG'] = 'False'
-                
-                print(f"      → PaddleOCR 초기화 중...")
-                self._ocr_engine = PaddleOCR(lang='korean', use_textline_orientation=True)
-            
-            # ===== pdf2image로 해당 페이지만 이미지로 변환 =====
-            # first_page와 last_page를 1-indexed로 지정
-            images = convert_from_path(
-                pdf_path, 
-                first_page=page_num + 1,  # 1-indexed
-                last_page=page_num + 1,
-                dpi=150
-            )
-            
-            if not images:
-                print(f"      → PDF 이미지 변환 실패")
+
+                _log(f"      → PaddleOCR 초기화 중...")
+                self._ocr_engine = PaddleOCR(lang='korean', use_angle_cls=True)
+
+            # ✅ pypdfium2로 해당 페이지만 렌더링 (0-indexed page_num)
+            pdf = PdfDocument(pdf_path)
+            if page_num < 0 or page_num >= len(pdf):
                 return text
-            
-            img = images[0]
-            img_array = np.array(img)
-            
-            # ===== OCR 실행 =====
-            result = self._ocr_engine.ocr(img_array)
-            
-            if result and result[0]:
-                lines = []
-                for line in result[0]:
-                    if line and len(line) >= 2:
-                        ocr_text = line[1][0]
-                        lines.append(ocr_text)
-                
+
+            page = pdf[page_num]
+            target_dpi = 150
+            scale = target_dpi / 72.0
+            bitmap = page.render(scale=scale)
+            pil_img = bitmap.to_pil()
+
+            img_array = self._normalize_ocr_image(pil_img)
+
+            # ===== OCR 실행 (안정화 버전) =====
+            result = None
+
+            # 페이지 OCR에서는 cls=True 금지
+            try:
+                result = self._ocr_engine.ocr(img_array)
+            except Exception as e1:
+                _log(f"      ⚠️ ocr() 실패, predict() 시도: {e1}")
+                try:
+                    if hasattr(self._ocr_engine, "predict"):
+                        result = self._ocr_engine.predict(img_array)
+                except Exception as e2:
+                    _log(f"      ❌ OCR 완전 실패: {e2}")
+                    return text
+
+            parsed = self._safe_parse_paddleocr_result(result)
+
+            if parsed:
+                lines = [p["text"] for p in parsed]
                 ocr_result = "\n".join(lines)
-                print(f"      → OCR 완료: {text_length}자 → {len(ocr_result)}자")
+                _log(f"      → OCR 완료: {text_length}자 → {len(ocr_result)}자")
                 return ocr_result if ocr_result else text
-        
-        except ImportError:
-            print(f"      → PaddleOCR/pdf2image 미설치, 텍스트만 사용")
+
+
+        except ImportError as e:
+            _log(f"      → PaddleOCR/pypdfium2 미설치, 텍스트만 사용: {e}")
             return text
         except Exception as e:
-            print(f"      ⚠️  OCR 실패: {e}")
+            _log(f"      ⚠️  OCR 실패: {e}")
             return text
-        
+
         return text
+
     
     def _extract_text_bboxes_with_ocr(self, pdf_path: str, page_num: int) -> List[Dict]:
         """
@@ -235,7 +347,7 @@ class UniversalImageExtractor:
                             'bottom': char['bottom']
                         })
                     
-                    print(f"      → pdfplumber로 {len(text_bboxes)}개 문자 bbox 추출")
+                    _log(f"      → pdfplumber로 {len(text_bboxes)}개 문자 bbox 추출")
                     return text_bboxes
         except:
             pass
@@ -243,57 +355,76 @@ class UniversalImageExtractor:
         # ===== 2. 텍스트 레이어 없음 → OCR로 bbox 추출 =====
         try:
             from paddleocr import PaddleOCR
-            from pdf2image import convert_from_path
             import numpy as np
-            
+            from pypdfium2 import PdfDocument
+
             if not hasattr(self, '_ocr_engine'):
                 os.environ['FLAGS_log_level'] = '3'
                 os.environ['PPOCR_SHOW_LOG'] = 'False'
-                self._ocr_engine = PaddleOCR(lang='korean', use_textline_orientation=True)
-            
-            # pdf → image
-            images = convert_from_path(
-                pdf_path, 
-                first_page=page_num + 1,
-                last_page=page_num + 1,
-                dpi=150
-            )
-            
-            if not images:
+                self._ocr_engine = PaddleOCR(lang='korean', use_angle_cls=True)
+
+            # ✅ pypdfium2로 해당 페이지 렌더링
+            pdf = PdfDocument(pdf_path)
+            if page_num < 0 or page_num >= len(pdf):
                 return []
-            
-            img = images[0]
-            img_array = np.array(img)
-            
-            # OCR 실행
-            result = self._ocr_engine.ocr(img_array)
-            
-            if result and result[0]:
-                # OCR 결과에서 bbox 추출
-                for line in result[0]:
-                    if line and len(line) >= 2:
-                        # line[0]: bbox [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
-                        bbox_points = line[0]
-                        
-                        # bbox를 x0, top, x1, bottom으로 변환
-                        x_coords = [p[0] for p in bbox_points]
-                        y_coords = [p[1] for p in bbox_points]
-                        
-                        text_bboxes.append({
-                            'x0': min(x_coords),
-                            'top': min(y_coords),
-                            'x1': max(x_coords),
-                            'bottom': max(y_coords)
-                        })
-                
-                print(f"      → OCR로 {len(text_bboxes)}개 텍스트 bbox 추출")
-                return text_bboxes
-        
-        except Exception as e:
-            print(f"      ⚠️  텍스트 bbox 추출 실패: {e}")
+
+            page = pdf[page_num]
+            target_dpi = 150
+            scale = target_dpi / 72.0
+            bitmap = page.render(scale=scale)
+            pil_img = bitmap.to_pil()
+
+            img_array = self._normalize_ocr_image(pil_img)
+
+            # ===== OCR 실행 (버전별 대응) =====
+            result = None
+
+            try:
+                result = self._ocr_engine.ocr(img_array)
+            except Exception as e1:
+                _log(f"      ⚠️ bbox OCR ocr() 실패, predict() 시도: {e1}")
+                try:
+                    if hasattr(self._ocr_engine, "predict"):
+                        result = self._ocr_engine.predict(img_array)
+                except Exception as e2:
+                    _log(f"      ❌ bbox OCR 완전 실패: {e2}")
+                    return []
+
+            parsed = self._safe_parse_paddleocr_result(result)
+
+            for item in parsed:
+                bbox_points = item["bbox"]
+                if not bbox_points:
+                    continue
+
+                try:
+                    x_coords = [p[0] for p in bbox_points if len(p) == 2]
+                    y_coords = [p[1] for p in bbox_points if len(p) == 2]
+
+                    if not x_coords or not y_coords:
+                        continue
+
+                    text_bboxes.append({
+                        'x0': min(x_coords),
+                        'top': min(y_coords),
+                        'x1': max(x_coords),
+                        'bottom': max(y_coords)
+                    })
+                except Exception:
+                    continue
+
+            if text_bboxes:
+                _log(f"      → OCR로 {len(text_bboxes)}개 텍스트 bbox 추출")
+
+            return text_bboxes
+
+        except ImportError as e:
+            _log(f"      ⚠️  OCR bbox 추출 불가(PaddleOCR/pypdfium2 미설치): {e}")
             return []
-        
-        return []
+        except Exception as e:
+            _log(f"      ⚠️  텍스트 bbox 추출 실패: {e}")
+            return []
+
     
     def _calculate_text_overlap(self, img_bbox: tuple, text_bboxes: List[Dict]) -> float:
         """
@@ -397,8 +528,8 @@ class UniversalImageExtractor:
         try:
             import pdfplumber  # ✅ pdfplumber 사용
         except ImportError:
-            print("   ❌ pdfplumber가 설치되지 않았습니다.")
-            print("   pip install pdfplumber")
+            _log("   ❌ pdfplumber가 설치되지 않았습니다.")
+            _log("   pip install pdfplumber")
             return []
         
         if not os.path.exists(pdf_path):
@@ -442,7 +573,7 @@ class UniversalImageExtractor:
                     images = page.images
                     total_images += len(images)
                     
-                    print(f"      [P{page_num+1}] 총 {len(images)}개 이미지 발견")
+                    _log(f"      [P{page_num+1}] 총 {len(images)}개 이미지 발견")
                     
                     for img in images:
                         try:
@@ -461,7 +592,7 @@ class UniversalImageExtractor:
                             # ===== 필터 1: 배경 제외 (90% 이상) =====
                             if area_pct > MAX_AREA_PCT:
                                 filtered_background += 1
-                                print(debug_msg + f" → 배경 제외 ❌")
+                                _log(debug_msg + f" → 배경 제외 ❌")
                                 continue
                             
                             # ===== 필터 2: 가로세로비 =====
@@ -469,30 +600,30 @@ class UniversalImageExtractor:
                                 aspect_ratio = max(width, height) / min(width, height)
                                 if aspect_ratio > MAX_ASPECT_RATIO:
                                     filtered_aspect += 1
-                                    print(debug_msg + f" → 가로세로비 제외 ({aspect_ratio:.1f}:1) ❌")
+                                    _log(debug_msg + f" → 가로세로비 제외 ({aspect_ratio:.1f}:1) ❌")
                                     continue
                             
                             # ===== 필터 3: 작은 면적 =====
                             pixel_area = width * height
                             if pixel_area < MIN_PIXEL_AREA:
                                 filtered_area += 1
-                                print(debug_msg + f" → 작은 면적 제외 ❌")
+                                _log(debug_msg + f" → 작은 면적 제외 ❌")
                                 continue
                             
                             # ===== 필터 4: 절대 크기 =====
                             if width < MIN_WIDTH or height < MIN_HEIGHT:
                                 filtered_size += 1
-                                print(debug_msg + f" → 작은 크기 제외 ❌")
+                                _log(debug_msg + f" → 작은 크기 제외 ❌")
                                 continue
                             
                             # ===== 필터 5: 상대 크기 =====
                             if area_pct < MIN_AREA_PCT:
                                 filtered_size += 1
-                                print(debug_msg + f" → 상대 크기 제외 ({area_pct:.1f}%) ❌")
+                                _log(debug_msg + f" → 상대 크기 제외 ({area_pct:.1f}%) ❌")
                                 continue
                             
                             # ===== 통과! =====
-                            print(debug_msg + " → 최종 추출 ✅✅✅")
+                            _log(debug_msg + " → 최종 추출 ✅✅✅")
                             
                             # ===== 필터 6: 텍스트 중첩 + 색상 복잡도 체크 ⭐⭐⭐ =====
                             # 이미지 바이너리 추출
@@ -504,10 +635,10 @@ class UniversalImageExtractor:
                                 elif hasattr(stream, 'rawdata'):
                                     image_bytes = stream.rawdata
                                 else:
-                                    print(debug_msg + " → 바이너리 추출 실패 ⚠️")
+                                    _log(debug_msg + " → 바이너리 추출 실패 ⚠️")
                                     continue
                             else:
-                                print(debug_msg + " → stream 없음 ⚠️")
+                                _log(debug_msg + " → stream 없음 ⚠️")
                                 continue
                             
                             # 텍스트 중첩 계산
@@ -546,7 +677,7 @@ class UniversalImageExtractor:
                             # 결과 처리
                             if is_textbox:
                                 filtered_text_overlap += 1
-                                print(debug_msg + f" → 텍스트상자 제외 ({filter_reason}) ❌")
+                                _log(debug_msg + f" → 텍스트상자 제외 ({filter_reason}) ❌")
                                 continue
                             
                             # 최종 통과 - 메타데이터 저장
@@ -563,25 +694,25 @@ class UniversalImageExtractor:
                             ))
                         
                         except Exception as e:
-                            print(f"      ⚠️ 이미지 처리 실패: {e}")
+                            _log(f"      ⚠️ 이미지 처리 실패: {e}")
                             continue
         
         except Exception as e:
-            print(f"   ❌ PDF 처리 실패: {e}")
+            _log(f"   ❌ PDF 처리 실패: {e}")
             import traceback
             traceback.print_exc()
             return []
         
         # 통계
-        print(f"\n   📊 PDF 이미지 분석:")
-        print(f"      - 전체 이미지: {total_images}개")
-        print(f"   🔍 필터링 통계:")
-        print(f"      - 배경 제외: {filtered_background}개")
-        print(f"      - 가로세로비: {filtered_aspect}개")
-        print(f"      - 작은 면적: {filtered_area}개")
-        print(f"      - 작은 크기: {filtered_size}개")
-        print(f"      - 텍스트 상자 (색상+중첩): {filtered_text_overlap}개")  # ✅ 추가
-        print(f"   ✅ 최종 추출: {len(metadata_list)}개 이미지\n")
+        _log(f"\n   📊 PDF 이미지 분석:")
+        _log(f"      - 전체 이미지: {total_images}개")
+        _log(f"   🔍 필터링 통계:")
+        _log(f"      - 배경 제외: {filtered_background}개")
+        _log(f"      - 가로세로비: {filtered_aspect}개")
+        _log(f"      - 작은 면적: {filtered_area}개")
+        _log(f"      - 작은 크기: {filtered_size}개")
+        _log(f"      - 텍스트 상자 (색상+중첩): {filtered_text_overlap}개")  # ✅ 추가
+        _log(f"   ✅ 최종 추출: {len(metadata_list)}개 이미지\n")
         
         return metadata_list
 
@@ -615,7 +746,7 @@ class ImprovedHybridFilterPipeline:
         
         from pathlib import Path
         
-        print("📚 문서 분석하여 키워드 자동 추출 중...")
+        _log("📚 문서 분석하여 키워드 자동 추출 중...")
         
         ext = Path(file_path).suffix.lower()
         all_text = []
@@ -636,11 +767,11 @@ class ImprovedHybridFilterPipeline:
                         if text:
                             all_text.append(text)
             except Exception as e:
-                print(f"   ⚠️ PDF 텍스트 추출 실패, 범용 패턴만 사용")
+                _log(f"   ⚠️ PDF 텍스트 추출 실패, 범용 패턴만 사용")
                 return
         
         else:
-            print(f"   ⚠️ 지원하지 않는 형식: {ext}")
+            _log(f"   ⚠️ 지원하지 않는 형식: {ext}")
             return
         
         full_text = "\n".join(all_text)[:5000]
@@ -657,7 +788,7 @@ class ImprovedHybridFilterPipeline:
 """
         
         if self.model is None:
-            print("   ⚠️ Gemini 모델 초기화 실패(인증 없음). 키워드 자동 추출 스킵.")
+            _log("   ⚠️ Gemini 모델 초기화 실패(인증 없음). 키워드 자동 추출 스킵.")
             self.document_keywords = []
             return
 
@@ -673,10 +804,10 @@ class ImprovedHybridFilterPipeline:
             data = json.loads(text)
             self.document_keywords = data.get("keywords", [])
             
-            print(f"   ✅ 추출된 키워드: {', '.join(self.document_keywords[:10])}")
+            _log(f"   ✅ 추출된 키워드: {', '.join(self.document_keywords[:10])}")
         
         except Exception as e:
-            print(f"   ⚠️ 자동 추출 실패, 범용 패턴만 사용")
+            _log(f"   ⚠️ 자동 추출 실패, 범용 패턴만 사용")
             self.document_keywords = []
 
     def step1_rule_check(self, meta: ImageMetadata):
@@ -747,7 +878,7 @@ class ImprovedHybridFilterPipeline:
                 if "429" in error_msg or "Resource exhausted" in error_msg:
                     if attempt < max_retries - 1:
                         wait_time = (attempt + 1) * 3
-                        print(f"      ⚠️  Rate Limit, {wait_time}초 대기...")
+                        _log(f"      ⚠️  Rate Limit, {wait_time}초 대기...")
                         time.sleep(wait_time)
                         continue
                     else:
@@ -762,7 +893,7 @@ class ImprovedHybridFilterPipeline:
         from pathlib import Path
         
         file_ext = Path(source_path).suffix.lower()
-        print(f"\n🔍 분석 시작: {os.path.basename(source_path)} ({file_ext})")
+        _log(f"\n🔍 분석 시작: {os.path.basename(source_path)} ({file_ext})")
         
         if self.auto_extract:
             self.extract_keywords_from_document(source_path)
@@ -770,9 +901,9 @@ class ImprovedHybridFilterPipeline:
         extractor = UniversalImageExtractor()
         all_meta = extractor.extract(source_path)
         
-        print("\n" + "="*120)
-        print(f"{'Slide':<6} | {'Size':<6} | {'Filter':<12} | {'Result':<12} | {'Reason'}")
-        print("-" * 120)
+        _log("\n" + "="*120)
+        _log(f"{'Slide':<6} | {'Size':<6} | {'Filter':<12} | {'Result':<12} | {'Reason'}")
+        _log("-" * 120)
 
         final_core = []
         stats = {
@@ -820,34 +951,34 @@ class ImprovedHybridFilterPipeline:
                 stats['rule_drop'] += 1
 
             wrapped_reason = textwrap.wrap(detail_reason, width=70)
-            print(f"{meta.slide_number:<6} | {meta.area_percentage:>5.1f}% | {filter_stage:<12} | {final_status:<12} | {wrapped_reason[0]}")
+            _log(f"{meta.slide_number:<6} | {meta.area_percentage:>5.1f}% | {filter_stage:<12} | {final_status:<12} | {wrapped_reason[0]}")
             for line in wrapped_reason[1:]:
-                print(f"{'':<6} | {'':<6} | {'':<12} | {'':<12} | {line}")
-            print("-" * 120)
+                _log(f"{'':<6} | {'':<6} | {'':<12} | {'':<12} | {line}")
+            _log("-" * 120)
 
-        print("\n" + "="*120)
-        print("📊 최종 결과")
-        print("="*120)
+        _log("\n" + "="*120)
+        _log("📊 최종 결과")
+        _log("="*120)
         
-        print(f"\n총 이미지: {stats['total']}개")
-        print(f"\n[1차 필터 - 규칙 기반]")
-        print(f"  ✅ 통과: {stats['rule_pass']}개")
-        print(f"  ❌ 제외: {stats['rule_drop']}개")
-        print(f"  ⚠️  2차 이동: {stats['ai_keep'] + stats['ai_drop']}개")
+        _log(f"\n총 이미지: {stats['total']}개")
+        _log(f"\n[1차 필터 - 규칙 기반]")
+        _log(f"  ✅ 통과: {stats['rule_pass']}개")
+        _log(f"  ❌ 제외: {stats['rule_drop']}개")
+        _log(f"  ⚠️  2차 이동: {stats['ai_keep'] + stats['ai_drop']}개")
         
-        print(f"\n[2차 필터 - AI 판단]")
-        print(f"  ✅ 통과: {stats['ai_keep']}개")
-        print(f"  ❌ 제외: {stats['ai_drop']}개")
+        _log(f"\n[2차 필터 - AI 판단]")
+        _log(f"  ✅ 통과: {stats['ai_keep']}개")
+        _log(f"  ❌ 제외: {stats['ai_drop']}개")
         
         total_keep = stats['rule_pass'] + stats['ai_keep']
         total_drop = stats['rule_drop'] + stats['ai_drop']
         
-        print(f"\n{'='*120}")
-        print(f"💎 최종 핵심 이미지: {total_keep}개 (1차: {stats['rule_pass']}개 + 2차: {stats['ai_keep']}개)")
-        print(f"🗑️  제외된 이미지: {total_drop}개")
+        _log(f"\n{'='*120}")
+        _log(f"💎 최종 핵심 이미지: {total_keep}개 (1차: {stats['rule_pass']}개 + 2차: {stats['ai_keep']}개)")
+        _log(f"🗑️  제외된 이미지: {total_drop}개")
         if stats['total'] > 0:
-            print(f"💰 Vision API 사용: {stats['ai_keep'] + stats['ai_drop']}회 ({(stats['ai_keep'] + stats['ai_drop'])/stats['total']*100:.1f}%)")
-        print(f"{'='*120}\n")
+            _log(f"💰 Vision API 사용: {stats['ai_keep'] + stats['ai_drop']}회 ({(stats['ai_keep'] + stats['ai_drop'])/stats['total']*100:.1f}%)")
+        _log(f"{'='*120}\n")
         
         return final_core
 
@@ -855,48 +986,48 @@ class ImprovedHybridFilterPipeline:
 if __name__ == "__main__":
     import sys
     
-    print("\n" + "="*120)
-    print("🎯 Improved Hybrid Filter V3 - 이미지 필터링 (pdfplumber)")
-    print("="*120)
+    _log("\n" + "="*120)
+    _log("🎯 Improved Hybrid Filter V3 - 이미지 필터링 (pdfplumber)")
+    _log("="*120)
     
     if len(sys.argv) > 1:
         source_file = sys.argv[1]
         
         if not os.path.exists(source_file):
-            print(f"\n❌ 파일을 찾을 수 없습니다: {source_file}")
+            _log(f"\n❌ 파일을 찾을 수 없습니다: {source_file}")
             sys.exit(1)
         
         auto_extract = True
         if len(sys.argv) > 2 and sys.argv[2] in ['--no-auto', '-n']:
             auto_extract = False
-            print("\n⚠️  자동 키워드 추출 비활성화")
+            _log("\n⚠️  자동 키워드 추출 비활성화")
         else:
-            print("\n✅ 자동 키워드 추출 활성화")
+            _log("\n✅ 자동 키워드 추출 활성화")
         
         try:
             pipeline = ImprovedHybridFilterPipeline(auto_extract_keywords=auto_extract)
             core_images = pipeline.run(source_file)
             
-            print(f"\n{'='*120}")
-            print(f"✅ 완료! 핵심 이미지: {len(core_images)}개")
-            print(f"{'='*120}\n")
+            _log(f"\n{'='*120}")
+            _log(f"✅ 완료! 핵심 이미지: {len(core_images)}개")
+            _log(f"{'='*120}\n")
             
         except Exception as e:
-            print(f"\n❌ 에러 발생: {e}")
+            _log(f"\n❌ 에러 발생: {e}")
             import traceback
             traceback.print_exc()
             sys.exit(1)
     
     else:
-        print("\n사용법:")
-        print("  python improved_hybrid_filter_v3.py <파일경로>")
-        print("\n예시:")
-        print("  python improved_hybrid_filter_v3.py 중등국어1.pdf")
-        print("\n✅ V3 개선사항:")
-        print("  - PyMuPDF (AGPL) → pdfplumber (MIT) 전환")
-        print("  - 라이선스 문제 해결")
-        print("  - OCR 기능 완전 유지 (pdf2image + PaddleOCR)")
-        print("  - 텍스트-이미지 중첩 감지 유지")
-        print("  - 색상 복잡도 필터 추가 (텍스트 상자 제거) ⭐")
-        print("  - 기존 v2 기능 모두 유지")
-        print("="*120 + "\n")
+        _log("\n사용법:")
+        _log("  python improved_hybrid_filter_v3.py <파일경로>")
+        _log("\n예시:")
+        _log("  python improved_hybrid_filter_v3.py 중등국어1.pdf")
+        _log("\n✅ V3 개선사항:")
+        _log("  - PyMuPDF (AGPL) → pdfplumber (MIT) 전환")
+        _log("  - 라이선스 문제 해결")
+        _log("  - OCR 기능 완전 유지 (pypdfium2 + PaddleOCR)")
+        _log("  - 텍스트-이미지 중첩 감지 유지")
+        _log("  - 색상 복잡도 필터 추가 (텍스트 상자 제거) ⭐")
+        _log("  - 기존 v2 기능 모두 유지")
+        _log("="*120 + "\n")

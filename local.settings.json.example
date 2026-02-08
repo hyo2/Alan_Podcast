@@ -10,6 +10,11 @@
     "PORT": "7071",
     "LOG_LEVEL": "INFO",
 
+    "AUTH_MODE": "mock",
+    "ALAN_AUTH_BASE_URL": "",
+    "ACCESS_POLICY": "pro_only",
+    "PRO_ROLE_ALLOWLIST": "pro_user,internal_user,pro_user_promotion",
+
     "CORS_ORIGINS": "",
 
     "VERTEX_AI_PROJECT_ID": "your-project-id",
@@ -26,11 +31,11 @@
     "AZURE_STORAGE_QUEUE_NAME": "your-queue-jobs",
 
     "BASE_OUTPUT_DIR": "./outputs",
-    "FRONTEND_URL": "http://localhost:5173",
 
     "LANGSMITH_API_KEY": "",
     "LANGSMITH_ENDPOINT": "https://api.smith.langchain.com",
     "LANGSMITH_PROJECT": "ai_audiobook",
+    "LANGCHAIN_TRACING": "false",
     "LANGCHAIN_TRACING_V2": "false"
   }
 }

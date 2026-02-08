@@ -2,12 +2,13 @@
 from fastapi import APIRouter, Depends, Response
 
 from app.dependencies.repos import get_channel_repo, get_session_repo
+from app.dependencies.auth import require_access
 from app.services.storage_service import get_storage
 from app.utils.response import success_response, error_response
 from app.utils.error_codes import ErrorCodes
 from app.utils.session_helpers import unwrap_response_tuple, to_iso_z
 
-router = APIRouter(prefix="/v1/channels", tags=["channels"])
+router = APIRouter(prefix="/v1/channels", tags=["channels"], dependencies=[Depends(require_access)],)
 
 
 @router.post("")

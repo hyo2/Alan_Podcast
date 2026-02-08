@@ -7,10 +7,12 @@
   "logging": {
     "logLevel": {
       "default": "Information",
-      "Host.Results": "Warning",
       "Function": "Information",
+      "Host.Results": "Warning",
       "Host.Aggregator": "Warning",
-      "Azure.Core": "Warning"
+      "Azure.Core": "Warning",
+      "Microsoft.AspNetCore.Routing": "Warning",
+      "Microsoft.Azure.WebJobs.Extensions.Storage": "Warning"
     }
   },
   "extensions": {
