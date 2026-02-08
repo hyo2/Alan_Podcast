@@ -22,6 +22,9 @@
     "VERTEX_AI_SERVICE_ACCOUNT_FILE": "path/to/service-account.json",
     "VERTEX_AI_MODEL_TEXT": "gemini-2.5-flash",
 
+    "GEMINI_OCR_FALLBACK": "true",
+    "GEMINI_OCR_MAX_SAMPLE_PAGES": "15",
+
     "DATABASE_URL": "postgresql://user:password@host:5432/database",
     "REPO_BACKEND": "postgres",
 

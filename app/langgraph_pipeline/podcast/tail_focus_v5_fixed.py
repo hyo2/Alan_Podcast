@@ -37,6 +37,15 @@ from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 from google.cloud import speech
 
+# ✅ 비용 계산 유틸리티
+try:
+    from app.langgraph_pipeline.podcast.pricing import calculate_tts_cost, calculate_stt_cost, format_cost
+except ImportError:
+    # 독립 실행 시에는 비용 계산 스킵
+    def calculate_tts_cost(chars): return 0.0
+    def calculate_stt_cost(secs): return 0.0
+    def format_cost(usd, include_krw=True): return f"${usd:.4f}"
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -752,6 +761,12 @@ class TailFocusV5Generator:
         else:
             guest_wav = None
         
+        
+        # ✅ TTS 문자 수 계산
+        host_chars = sum(len(text) for text in host_texts)
+        guest_chars = sum(len(text) for text in guest_texts) if guest_texts else 0
+        self.total_tts_chars = host_chars + guest_chars
+        
         self.tts_time = time.time() - tts_start
         
         # Stage 2: STT
@@ -817,16 +832,24 @@ class TailFocusV5Generator:
         logger.info(f"   📁 {final_wav}")
         logger.info("="*60 + "\n")
         
-        logger.info("📊 성능 측정:")
-        logger.info(f"   TTS: {self.tts_time:.2f}초")
-        logger.info(f"   STT: {self.stt_time:.2f}초")
-        logger.info(f"   분할: {self.segment_time:.2f}초")
-        logger.info(f"   병합: {self.merge_time:.2f}초")
-        logger.info(f"   총: {self.tts_time + self.stt_time + self.segment_time + self.merge_time:.2f}초")
-        logger.info(f"   API 호출: {self.api_calls}번")
-        logger.warning(f"   429 에러: {self.error_429_count}번")
-        logger.info(f"   재시도: {self.retry_count}번")
-        logger.info("="*60 + "\n")
+        print("📊 성능 측정:")
+        print(f"   TTS: {self.tts_time:.2f}초")
+        print(f"   STT: {self.stt_time:.2f}초")
+        print(f"   분할: {self.segment_time:.2f}초")
+        print(f"   병합: {self.merge_time:.2f}초")
+        print(f"   총: {self.tts_time + self.stt_time + self.segment_time + self.merge_time:.2f}초")
+        print(f"   API 호출: {self.api_calls}번")
+        print(f"   💰 TTS 문자: {self.total_tts_chars:,}자")
+        
+        # ✅ 비용 계산
+        tts_cost = calculate_tts_cost(self.total_tts_chars)
+        stt_cost = calculate_stt_cost(self.stt_time)
+        print(f"   💵 TTS 비용: {format_cost(tts_cost)}")
+        print(f"   💵 STT 비용: {format_cost(stt_cost)}")
+        # STT 시간은 이미 위에 출력됨
+        print(f"   429 에러: {self.error_429_count}번")
+        print(f"   재시도: {self.retry_count}번")
+        print("="*60 + "\n")
         
         # ✅ 최종 WAV 경로 + 세그먼트 정보 반환 (정확한 타임스탬프용!)
         return final_wav, host_segs, guest_segs

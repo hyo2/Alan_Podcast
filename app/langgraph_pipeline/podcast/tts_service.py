@@ -1053,6 +1053,16 @@ class TTSService:
             # 7. MP3 파일 리스트
             mp3_files = [final_mp3]
             
+            # ✅ 8. TTS/STT 통계 정보를 metadata에 추가
+            # 첫 번째 메타데이터 항목에 통계 추가 (graph.py에서 활용)
+            if audio_metadata:
+                audio_metadata[0]['_tts_stats'] = {
+                    'tts_characters': generator.total_tts_chars,
+                    'tts_time': generator.tts_time,
+                    'stt_time': generator.stt_time,
+                    'stt_seconds': generator.stt_time  # 초 단위
+                }
+            
             logger.info(f"✅ Tail Focus V5 변환 완료: {len(dialogues)}개 발화 → {final_mp3}")
             
             return audio_metadata, mp3_files

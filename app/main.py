@@ -38,10 +38,29 @@ def init_logging() -> None:
     ))
     root.addHandler(handler)
 
+    # noisy third-party loggers는 dev에서도 WARNING로 올려서 조용히
+    NOISY_LOGGERS = [
+        # pdfplumber가 사용하는 pdfminer.six 쪽
+        "pdfminer",
+        "pdfminer.psparser",
+        "pdfminer.pdfdocument",
+        "pdfminer.pdfparser",
+        "pdfminer.cmapdb",
+        "pdfminer.pdfinterp",
+        "pdfminer.converter",
+        "pdfminer.layout",
+
+        # 필요하면 추가
+        "pdfplumber",
+        "PIL",
+        "pypdfium2",
+    ]
+    for name in NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
     # uvicorn 로거도 동일 레벨로 정렬
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-        l = logging.getLogger(name)
-        l.setLevel(level)
+        logging.getLogger(name).setLevel(level)
 
     logging.getLogger(__name__).info("logging initialized (LOG_LEVEL=%s)", log_level_str)
 

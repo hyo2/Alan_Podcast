@@ -31,6 +31,7 @@ from datetime import datetime
 from pathlib import Path
 import traceback
 import cv2
+import io
 import numpy as np
 import logging
 import sys
@@ -74,8 +75,8 @@ try:
     import pdfplumber
     PDFPLUMBER_AVAILABLE = True
 except ImportError:
-    _log("❌ pdfplumber가 설치되지 않았습니다.")
-    _log("   pip install pdfplumber")
+    _log("❌ pdfplumber가 설치되지 않았습니다.", level="ERROR")
+    _log("   pip install pdfplumber", level="ERROR")
     PDFPLUMBER_AVAILABLE = False
 
 # OCR 라이브러리 (선택) - pypdfium2 사용
@@ -95,14 +96,14 @@ try:
             use_angle_cls=True
         )
         OCR_AVAILABLE = True
-        _log("✅ OCR 엔진 초기화 완료 (PaddleOCR + pypdfium2)")
+        _log("✅ OCR 엔진 초기화 완료 (PaddleOCR + pypdfium2)", level="INFO")
     except Exception as e:
         # 엔진 초기화 실패는 의존성 문제와 분리해서 표시
-        _log(f"⚠️  OCR 엔진 초기화 실패(엔진): {e}")
+        _log(f"⚠️  OCR 엔진 초기화 실패(엔진): {e}", level="WARNING")
 
 except ImportError as e:
     # 의존성 import 실패만 여기로 옴
-    _log(f"⚠️  OCR 의존성 미설치(선택): {e}")
+    _log(f"⚠️  OCR 의존성 미설치(선택): {e}", level="WARNING")
 
 
 # 기존 노드 임포트
@@ -111,7 +112,8 @@ from .improved_hybrid_filter import (
     ImprovedHybridFilterPipeline,
     UniversalImageExtractor,
     ImageMetadata,
-    get_global_model
+    get_global_model,
+    gemini_ocr_image_bytes
 )
 
 from vertexai.generative_models import Part
@@ -129,6 +131,16 @@ class TextExtractor:
         self.ocr_enabled = OCR_AVAILABLE
         self.min_text_length = 100
         self._ocr_engine = None
+
+        # OCR 결과가 비어있을 때 Gemini(Vision)로 보조 OCR 시도 (비용/지연 주의)
+        self.gemini_ocr_fallback = os.getenv('GEMINI_OCR_FALLBACK', 'false').lower() in ('1','true','yes','y')
+        
+        # ✅ V3: 샘플링 페이지 수 설정 (기본: 15)
+        self.gemini_ocr_max_sample_pages = int(os.getenv('GEMINI_OCR_MAX_SAMPLE_PAGES', '15'))
+        
+        # ✅ V3: 샘플링 통계
+        self._gemini_ocr_used_pages = 0
+        self._gemini_ocr_skipped_pages = 0
 
     def _safe_parse_ocr_result(self, result):
         """
@@ -187,7 +199,7 @@ class TextExtractor:
                         
             except Exception as e:
                 # 개별 item 파싱 실패는 무시하고 계속
-                _log(f"⚠️ OCR 결과 파싱 스킵: {e}")
+                _log(f"⚠️ OCR 결과 파싱 스킵: {e}", level="DEBUG")
                 continue
         
         return texts
@@ -256,8 +268,68 @@ class TextExtractor:
             return "\n".join(texts), pil_img
 
         except Exception as e:
-            _log(f"❌ OCR 렌더 실패 (page {page_number}): {e}")
+            _log(f"❌ OCR 렌더 실패 (page {page_number}): {e}", level="ERROR", exc_info=True)
             return "", None
+        
+    def _calculate_sample_pages(self, total_pages: int, max_samples: int) -> List[int]:
+        """
+        전체 내용을 커버하도록 페이지 샘플링
+        
+        전략:
+        - 앞부분 (도입/목차): 6페이지
+        - 뒷부분 (요약/과제): 6페이지
+        - 중간부분 (본론): 균등 간격 샘플링
+        
+        Args:
+            total_pages: 전체 페이지 수
+            max_samples: 최대 샘플 페이지 수
+            
+        Returns:
+            샘플링할 페이지 번호 리스트 (1-based)
+        """
+        if total_pages <= max_samples:
+            # 전체 페이지가 샘플 수보다 적으면 전체 처리
+            return list(range(1, total_pages + 1))
+        
+        # 앞/뒤 각 6페이지
+        head_count = min(6, total_pages)
+        tail_count = min(6, total_pages)
+        
+        head_pages = list(range(1, head_count + 1))
+        tail_pages = list(range(max(total_pages - tail_count + 1, head_count + 1), total_pages + 1))
+        
+        # 중간 샘플 페이지 수 계산
+        mid_count = max_samples - len(head_pages) - len(tail_pages)
+        
+        if mid_count > 0:
+            # 중간 영역 범위
+            mid_start = head_count + 1
+            mid_end = total_pages - tail_count
+            
+            if mid_end > mid_start:
+                # 균등 간격으로 샘플링
+                step = (mid_end - mid_start + 1) / (mid_count + 1)
+                mid_pages = [
+                    int(mid_start + step * (i + 1))
+                    for i in range(mid_count)
+                ]
+                # 중복 제거
+                mid_pages = [p for p in mid_pages if p not in head_pages and p not in tail_pages]
+            else:
+                mid_pages = []
+        else:
+            mid_pages = []
+        
+        # 정렬 및 중복 제거
+        all_pages = sorted(set(head_pages + mid_pages + tail_pages))
+        
+        _log(f"   📊 샘플링 전략: 전체 {total_pages}페이지 → {len(all_pages)}페이지 선택", level="INFO")
+        _log(f"      - 앞부분: {head_pages}", level="DEBUG")
+        if mid_pages:
+            _log(f"      - 중간부분: {mid_pages}", level="DEBUG")
+        _log(f"      - 뒷부분: {tail_pages}", level="DEBUG")
+        
+        return all_pages
 
         
     def _save_debug_image(self, image, pdf_path: str, page_number: int):
@@ -271,41 +343,52 @@ class TextExtractor:
         out_path = debug_dir / f"page_{page_number:03d}.png"
         image.save(out_path)
 
-        _log(f"🧪 OCR DEBUG 이미지 저장: {out_path}")
+        _log(f"🧪 OCR DEBUG 이미지 저장: {out_path}", level="DEBUG")
 
     def extract_with_markers(self, pdf_path: str, prefix: str = "MAIN"): 
         """
             PDF에서 페이지별 텍스트 추출 + 마커 삽입
             pdfplumber 사용, 텍스트 부족 시 OCR 자동 수행
             
-            Args:
-                pdf_path: PDF 파일 경로
-                prefix: 페이지 마커 접두사 (MAIN, SUPP1, SUPP2, SUPP3)
-            
-            Returns:
-                {
-                    "full_text": "[MAIN-PAGE 1: 제목]\n내용...",
-                    "total_pages": 21
-                }
+            V3 변경사항:
+            - Gemini OCR Fallback 시 샘플링 적용
+            - PaddleOCR 성공 시에는 기존대로 전체 페이지 처리
+            ...
         """
         pages_text = []
         total_pages = 0
         ocr_count = 0
-
+        
+        # ✅ V3: Gemini 샘플링 관련 카운터 초기화
+        self._gemini_ocr_used_pages = 0
+        self._gemini_ocr_skipped_pages = 0
+        
+        # ✅ V3: 1단계 - 전체 페이지 수 확인 후 샘플 페이지 결정
+        sample_pages = None
         with pdfplumber.open(pdf_path) as pdf:
             total_pages = len(pdf.pages)
-
+            
+            # ✅ V3: Gemini Fallback이 활성화되어 있으면 샘플 페이지 미리 계산
+            if self.gemini_ocr_fallback:
+                sample_pages = self._calculate_sample_pages(
+                    total_pages, 
+                    self.gemini_ocr_max_sample_pages
+                )
+                _log(f"   🎯 Gemini OCR Fallback 샘플링 활성화: {len(sample_pages)}/{total_pages} 페이지", level="INFO")
+        
+        # ✅ V3: 2단계 - 페이지별 처리
+        with pdfplumber.open(pdf_path) as pdf:
             for page_idx, page in enumerate(pdf.pages, start=1):
                 text = page.extract_text() or ""
                 text_length = len(text.strip())
 
                 _log(
-                    f"      [DEBUG] page={page_idx} text_len={text_length} "
-                    f"ocr_enabled={self.ocr_enabled}"
-                )
+                     f"      page={page_idx} text_len={text_length} ocr_enabled={self.ocr_enabled}",
+                     level="DEBUG"
+                 )
 
                 if text_length < self.min_text_length and self.ocr_enabled:
-                    _log(f"      → 페이지 {page_idx}: OCR 수행")
+                    _log(f"      → 페이지 {page_idx}: OCR 수행", level="INFO")
 
                     ocr_text, pil_img = self._perform_ocr_on_page(pdf_path, page_idx)
 
@@ -317,11 +400,46 @@ class TextExtractor:
                     if ocr_text:
                         text = ocr_text
                         ocr_count += 1
-                        _log(f"         ✅ OCR 완료 ({len(ocr_text)}자)")
+                        _log(f"         ✅ OCR 완료 ({len(ocr_text)}자)", level="INFO")
+                    # ✅ V3: PaddleOCR 실패 → Gemini Fallback (샘플링 적용)
                     else:
-                        _log(f"         ⚠️ OCR 결과 없음")
+                        _log(f"         ⚠️ PaddleOCR 결과 없음", level="WARNING")
 
+                        # Gemini Fallback 활성화 + 이미지 있음
+                        if self.gemini_ocr_fallback and pil_img is not None:
+                            # ✅ V3: 샘플 페이지인지 확인
+                            if sample_pages and page_idx in sample_pages:
+                                try:
+                                    buf = io.BytesIO()
+                                    pil_img.save(buf, format="PNG")
+                                    gem_text, usage = gemini_ocr_image_bytes(
+                                            buf.getvalue(),
+                                            language_hint="ko",
+                                        )
+                                    self._gemini_ocr_used_pages += 1
 
+                                    if gem_text and gem_text.strip():
+                                        text = gem_text
+                                        ocr_count += 1
+                                        _log(
+                                            f"         ✅ Gemini OCR fallback 성공 ({len(gem_text)}자) "
+                                            f"tokens={usage.get('total_tokens','?')}",
+                                            level="INFO",
+                                        )
+                                    else:
+                                        _log("         ⚠️ Gemini OCR fallback도 결과 없음", level="WARNING")
+
+                                except Exception as e:
+                                        _log(f"         ⚠️ Gemini OCR fallback 실패: {e}", level="WARNING")
+                            else:
+                                # ✅ V3: 샘플 페이지가 아니면 스킵
+                                self._gemini_ocr_skipped_pages += 1
+                                _log(
+                                    f"         ⏭️  Gemini OCR 샘플링 범위 외 (스킵: {self._gemini_ocr_skipped_pages}페이지)",
+                                    level="DEBUG"
+                                )
+
+                # 페이지 마커 및 텍스트 추가
                 title = (
                     text.split("\n")[0][:50]
                     if text.strip()
@@ -333,16 +451,37 @@ class TextExtractor:
                 pages_text.append("")
 
         if ocr_count:
-            _log(f"   ✅ OCR 처리 완료: {ocr_count} 페이지")
+            _log(f"   ✅ OCR 처리 완료: {ocr_count} 페이지", level="INFO")
+        
+        # ✅ V3: Gemini 샘플링 통계 출력
+        if self.gemini_ocr_fallback and self._gemini_ocr_used_pages > 0:
+            _log(
+                f"   💰 Gemini OCR Fallback 사용: {self._gemini_ocr_used_pages}페이지 "
+                f"(스킵: {self._gemini_ocr_skipped_pages}페이지)",
+                level="INFO"
+            )
 
         return {
             "full_text": "\n".join(pages_text),
             "total_pages": total_pages,
+            "gemini_fallback_used": self._gemini_ocr_used_pages > 0,
         }
 
 class ImageDescriptionGenerator:
     """통과된 이미지에 대한 상세 설명 생성 (2-4문장)"""
     
+    
+    def __init__(self):
+        """이미지 설명 생성기 초기화"""
+        self.total_tokens = 0  # ✅ 누적 토큰 수
+        self.description_count = 0  # 생성한 설명 개수
+        
+        # ✅ Gemini 모델 초기화
+        from .improved_hybrid_filter import get_global_model
+        self.model = get_global_model()
+        
+        if self.model is None:
+            print("      ⚠️  Warning: Gemini 모델 초기화 실패 - 이미지 설명 생성 불가", level="WARNING")
     def generate_description(
         self, 
         image_bytes: bytes, 
@@ -387,6 +526,19 @@ class ImageDescriptionGenerator:
 
                 response = model.generate_content([image_part, prompt])
                 description = response.text.strip()
+                
+                # ✅ 토큰 사용량 추적 (usage_metadata 우선)
+                tokens_added = 0
+                try:
+                    # Method 1: response.usage_metadata (가장 정확)
+                    if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                        tokens_added = getattr(response.usage_metadata, 'total_token_count', 0)
+                        if tokens_added > 0:
+                            self.total_tokens += tokens_added
+                            self.description_count += 1
+                except Exception:
+                    pass
+                
                 return description
                 
             except Exception as e:
@@ -395,9 +547,9 @@ class ImageDescriptionGenerator:
                 if "429" in error_msg or "Resource exhausted" in error_msg:
                     if attempt < max_retries - 1:
                         wait_time = (attempt + 1) * 3
-                        _log(f"      ⚠️  Rate Limit, {wait_time}초 대기 중...", end='', flush=True)
+                        _log(f"      ⚠️  Rate Limit, {wait_time}초 대기 중...", level="WARNING", end='', flush=True)
                         time.sleep(wait_time)
-                        _log(" 재시도")
+                        _log(" 재시도", level="WARNING")
                         continue
                     else:
                         return "이미지 설명 생성 실패: API rate limit exceeded"
@@ -455,9 +607,9 @@ class MetadataGenerator:
     ) -> str:
         """메타데이터 생성"""
         _log(f"\n{'='*120}")
-        _log(f"🎯 메타데이터 생성 시작")
+        _log(f"🎯 메타데이터 생성 시작", level="INFO")
         _log(f"{'='*120}")
-        _log(f"주강의자료: {primary_file}")
+        _log(f"주강의자료: {primary_file}", level="INFO")
         if supplementary_files:
             _log(f"보조자료: {len(supplementary_files)}개")
             for i, supp in enumerate(supplementary_files, 1):
@@ -467,23 +619,46 @@ class MetadataGenerator:
         with tempfile.TemporaryDirectory() as temp_dir:
             self.converter = DocumentConverterNode(output_dir=temp_dir)
             
-            _log("📄 [1/3] 주강의자료 처리 중...")
+            _log("📄 [1/3] 주강의자료 처리 중...", level="INFO")
             primary_metadata = self._process_primary_source(primary_file)
             
-            _log("\n📚 [2/3] 보조자료 처리 중...")
+            _log("\n📚 [2/3] 보조자료 처리 중...", level="INFO")
             supplementary_metadata = []
             if supplementary_files:
                 for i, supp_file in enumerate(supplementary_files[:3], 1):
                     try:
                         supp_meta = self._process_supplementary_source(supp_file, i)
                         supplementary_metadata.append(supp_meta)
-                        _log(f"   ✅ 보조자료 {i} 처리 성공")
+                        _log(f"   ✅ 보조자료 {i} 처리 성공", level="INFO")
                     except Exception as e:
-                        _log(f"   ⚠️ 보조자료 {i} 처리 실패 (계속 진행): {e}")
+                        _log(f"   ⚠️ 보조자료 {i} 처리 실패 (계속 진행): {e}", level="WARNING", exc_info=True)
             else:
-                _log("   ⚠️  보조자료 없음 (선택 사항)")
+                _log("   ⚠️  보조자료 없음 (선택 사항)", level="INFO")
             
-            _log("\n🔧 [3/3] 메타데이터 통합 중...")
+            _log("\n🔧 [3/3] 메타데이터 통합 중...", level="INFO")
+            
+            # ✅ Vision 토큰 통계 수집
+            vision_tokens = {}
+            if hasattr(self.image_filter, 'vision_tokens'):
+                vision_tokens = self.image_filter.vision_tokens.copy()
+                _log(f"   image_filter.vision_tokens = {vision_tokens}", level="DEBUG")
+            
+            # ✅ 이미지 설명 생성 토큰 추가
+            _log(f"   image_describer.total_tokens = {self.image_describer.total_tokens}", level="DEBUG")
+            _log(f"   image_describer.description_count = {self.image_describer.description_count}", level="DEBUG")
+            
+            if self.image_describer.total_tokens > 0:
+                vision_tokens['image_description'] = self.image_describer.total_tokens
+                vision_tokens['description_count'] = self.image_describer.description_count
+                vision_tokens['total'] = vision_tokens.get('total', 0) + self.image_describer.total_tokens
+                _log(f"   vision_tokens after adding image_description = {vision_tokens}", level="DEBUG")
+            
+            # ✅ 비용 계산
+            if vision_tokens.get('total', 0) > 0:
+                from .pricing import calculate_vision_cost, format_cost
+                vision_cost = calculate_vision_cost(vision_tokens['total'])
+                vision_tokens['cost_usd'] = vision_cost
+            
             metadata = {
                 "metadata_version": "1.0",
                 "created_at": datetime.now().isoformat(),
@@ -498,22 +673,42 @@ class MetadataGenerator:
                 json.dump(metadata, f, ensure_ascii=False, indent=2)
             
             _log(f"\n{'='*120}")
-            _log(f"✅ 메타데이터 생성 완료!")
+            _log(f"✅ 메타데이터 생성 완료!", level="INFO")
             _log(f"{'='*120}")
             _log(f"📁 출력 파일: {output_path}")
             _log(f"📊 주강의자료 페이지: {primary_metadata['total_pages']}개")
             _log(f"🖼️  필터링된 이미지: {len(primary_metadata['filtered_images'])}개")
             if supplementary_metadata:
                 total_supp_pages = sum(s['total_pages'] for s in supplementary_metadata)
-                _log(f"📚 보조자료 페이지: {total_supp_pages}개")
-            _log(f"{'='*120}\n")
+                _log(f"📚 보조자료 페이지: {total_supp_pages}개", level="INFO")
             
-            return str(output_path)
+            # ✅ Vision 토큰 통계 출력
+            if vision_tokens:
+                _log(f"\n💰 Vision API 사용 통계:", level="INFO")
+                if 'keyword_extraction' in vision_tokens:
+                    _log(f"   📝 키워드 추출: {vision_tokens['keyword_extraction']:,} tokens", level="INFO")
+                if 'image_filtering' in vision_tokens:
+                    _log(f"   🔍 이미지 필터링: {vision_tokens['image_filtering']:,} tokens", level="INFO")
+                if 'image_description' in vision_tokens:
+                    _log(f"   📸 이미지 설명 생성: {vision_tokens['image_description']:,} tokens ({vision_tokens['description_count']}개)", level="INFO")
+                if 'total' in vision_tokens:
+                    _log(f"   📊 Total: {vision_tokens['total']:,} tokens", level="INFO")
+                if 'cost_usd' in vision_tokens:
+                    _log(f"   💵 비용: {format_cost(vision_tokens['cost_usd'])}", level="INFO")
+            
+            print(f"{'='*120}\n")
+            
+            # ✅ vision_tokens와 함께 반환
+            return {
+                "metadata_path": str(output_path),
+                "vision_tokens": vision_tokens
+            }
     
     def _process_primary_source(self, file_path: str) -> Dict[str, Any]:
         """
         주강의자료 처리
         ✅ TXT/URL 지원 추가
+        ✅ PPTX 직접 텍스트 추출 (PDF 변환 없이)
         """
         file_path_str = str(file_path)
         
@@ -527,46 +722,84 @@ class MetadataGenerator:
             original_file_type = file_path_obj.suffix.lower().replace('.', '')
             display_name = file_path_obj.name
         
-        _log(f"   📄 파일: {display_name} ({original_file_type})")
+        _log(f"   📄 파일: {display_name} ({original_file_type})", level="INFO")
         
-        # 1. 파일 변환 (TXT/URL도 PDF로 변환됨)
-        _log(f"   🔄 파일 처리 중...")
-        processed_path = self.converter.convert(file_path_str)
-        
-        # 2. 텍스트 추출
-        _log(f"   📝 텍스트 추출 중...")
-        text_data = self.text_extractor.extract_with_markers(processed_path, prefix="MAIN")
-        _log(f"   ✅ 텍스트 추출 완료: {len(text_data['full_text'])}자")
-        
-        # 3. 이미지 필터링
-        _log(f"   🖼️  이미지 처리 중...")
-        
-        filtered_images = []
-        keywords = []
-        
-        # TXT/URL은 이미지 없음
-        if original_file_type in ['txt', 'url']:
-            _log(f"      → TXT/URL은 이미지 없음, 건너뛰기")
-            all_images = []
-        
-        elif original_file_type == 'pptx':
-            _log(f"      → PPTX 원본에서 직접 추출")
+        # ✅ PPTX는 직접 텍스트 추출 (PDF 변환 시 한글 깨짐 방지)
+        if original_file_type == 'pptx':
+            _log(f"   📝 PPTX 직접 텍스트 추출 중... (PDF 변환 건너뜀)", level="INFO")
+            from pptx import Presentation
+            
+            prs = Presentation(file_path_str)
+            pages_text = []
+            total_pages = 0
+            
+            for slide_num, slide in enumerate(prs.slides, 1):
+                total_pages += 1
+                
+                # 슬라이드 제목 추출
+                title = "No Title"
+                if slide.shapes.title and slide.shapes.title.text.strip():
+                    title = slide.shapes.title.text.strip()[:50]
+                
+                # 페이지 마커
+                pages_text.append(f"[MAIN-PAGE {slide_num}: {title}]")
+                
+                # 슬라이드 내용 추출
+                for shape in slide.shapes:
+                    if hasattr(shape, "text") and shape.text.strip():
+                        pages_text.append(shape.text.strip())
+                
+                pages_text.append("")  # 슬라이드 구분
+            
+            full_text = "\n".join(pages_text)
+            _log(f"   ✅ 텍스트 추출 완료: {len(full_text)}자, {total_pages}페이지", level="INFO")
+            
+            # 이미지는 PPTX 원본에서 추출
+            _log(f"   🖼️  이미지 처리 중...", level="INFO")
+            _log(f"      → PPTX 원본에서 직접 추출", level="INFO")
             self.image_filter.extract_keywords_from_document(file_path_str)
             keywords = self.image_filter.document_keywords
             all_images = self._extract_images_from_pptx(file_path_str)
             
-        elif original_file_type in ['docx', 'pdf']:
-            _log(f"      → PDF에서 이미지 추출")
-            self.image_filter.extract_keywords_from_document(processed_path)
-            keywords = self.image_filter.document_keywords
-            extractor = UniversalImageExtractor()
-            all_images = extractor.extract(processed_path)
-        
         else:
-            _log(f"   ⚠️  지원하지 않는 형식: {original_file_type}")
-            all_images = []
+            # 기존 방식: PDF 변환
+            _log(f"   🔄 파일 처리 중...", level="INFO")
+            processed_path = self.converter.convert(file_path_str)
+            
+            # 2. 텍스트 추출
+            _log(f"   📝 텍스트 추출 중...", level="INFO")
+            text_data = self.text_extractor.extract_with_markers(processed_path, prefix="MAIN")
+            full_text = text_data['full_text']
+            total_pages = text_data['total_pages']
+            _log(f"   ✅ 텍스트 추출 완료: {len(full_text)}자", level="INFO")
+            
+            # 3. 이미지 필터링
+            # 3. 이미지 필터링
+            _log(f"   🖼️  이미지 처리 중...", level="INFO")
+            
+            # TXT/URL은 이미지 없음
+            if original_file_type in ['txt', 'url']:
+                _log(f"      → TXT/URL은 이미지 없음, 건너뛰기", level="INFO")
+                all_images = []
+                keywords = []
+            
+            elif original_file_type in ['docx', 'pdf']:
+                _log(f"      → PDF에서 이미지 추출", level="INFO")
+                self.image_filter.extract_keywords_from_document(processed_path)
+                keywords = self.image_filter.document_keywords
+                extractor = UniversalImageExtractor()
+                
+                # ✅ Gemini Fallback 사용 여부 전달
+                gemini_used = text_data.get('gemini_fallback_used', False)
+                all_images = extractor.extract(processed_path, skip_ocr=gemini_used)
+            
+            else:
+                _log(f"   ⚠️  지원하지 않는 형식: {original_file_type}", level="WARNING")
+                all_images = []
+                keywords = []
         
-        # 4. 필터링 실행
+        # 4. 필터링 실행 (공통)
+        filtered_images = []
         if all_images:
             _log(f"   🔍 {len(all_images)}개 이미지 발견, 필터링 시작...")
 
@@ -598,12 +831,18 @@ class MetadataGenerator:
         if filtered_images:
             _log(f"   📝 이미지 설명 생성 중... (0/{len(filtered_images)})", end='', flush=True)
             
+            # ✅ 이전 토큰 수 저장 (각 이미지당 토큰 추적용)
+            prev_tokens = self.image_describer.total_tokens
+            
             for i, img_meta in enumerate(filtered_images, 1):
                 description = self.image_describer.generate_description(
                     img_meta.image_bytes,
                     img_meta.adjacent_text,
                     keywords
                 )
+                
+                # ✅ 이번 이미지 설명 생성에 사용된 토큰 계산
+                current_tokens = self.image_describer.total_tokens - prev_tokens
                 
                 page_title = self._extract_page_title(
                     img_meta.slide_title,
@@ -619,14 +858,26 @@ class MetadataGenerator:
                     "area_percentage": img_meta.area_percentage
                 })
                 
-                _log(f"\r   📝 이미지 설명 생성 중... ({i}/{len(filtered_images)})", end='', flush=True)
+                # ✅ 진행 상황과 함께 토큰 정보 출력
+                if current_tokens > 0:
+                    _log(f"\r   📝 이미지 설명 생성 중... ({i}/{len(filtered_images)}) - #{i}: {current_tokens:,} tokens", level="INFO", end='', flush=True)
+                else:
+                    _log(f"\r   📝 이미지 설명 생성 중... ({i}/{len(filtered_images)})", level="INFO", end='', flush=True)
+                
+                # 다음 이미지를 위해 prev_tokens 업데이트
+                prev_tokens = self.image_describer.total_tokens
             
-            _log()
-            
-            _log(f"\n   {'='*80}")
-            _log(f"   📊 이미지 설명 생성 완료")
-            _log(f"      - 처리된 이미지: {len(filtered_images)}개")
-            _log(f"   {'='*80}\n")
+            _log(f"\n   {'='*80}", level="INFO")
+            _log(f"   📊 이미지 설명 생성 완료", level="INFO")
+            _log(f"      - 처리된 이미지: {len(filtered_images)}개", level="INFO")
+            # ✅ 총 토큰 수 출력            
+            if self.image_describer.total_tokens > 0:
+                avg_tokens = self.image_describer.total_tokens / len(filtered_images) if len(filtered_images) > 0 else 0
+                _log(f"      - 총 토큰: {self.image_describer.total_tokens:,} tokens", level="INFO")
+                _log(f"      - 평균: {avg_tokens:.0f} tokens/image", level="INFO")
+            else:
+                _log(f"      ⚠️  토큰 정보 없음 (usage_metadata 미지원 가능성)", level="WARNING")
+            _log(f"   {'='*80}\n", level="INFO")
 
         # 6. 통계
         total_images = len(all_images)
@@ -634,11 +885,11 @@ class MetadataGenerator:
         
         return {
             "role": "main",
-            "filename": display_name if original_file_type == 'url' else file_path_obj.name,
+            "filename": display_name if original_file_type == 'url' else (file_path_obj.name if file_path_obj else display_name),
             "file_type": original_file_type,
-            "total_pages": text_data['total_pages'],
+            "total_pages": total_pages,
             "content": {
-                "full_text": text_data['full_text']
+                "full_text": full_text
             },
             "filtered_images": filtered_image_metadata,
             "statistics": {
@@ -649,12 +900,17 @@ class MetadataGenerator:
         }
     
     def _process_supplementary_source(self, file_path: str, order: int) -> Dict[str, Any]:
+        """
+        보조자료 처리
+        ✅ PPTX 직접 텍스트 추출 (PDF 변환 없이)
+        """
         file_path_str = str(file_path)
         
         # URL과 파일 구분
         if file_path_str.startswith(('http://', 'https://')):
             file_type = 'url'
             display_name = 'Web Content'
+            file_path_obj = None
         else:
             file_path_obj = Path(file_path)
             file_type = file_path_obj.suffix.lower().replace('.', '')
@@ -662,21 +918,56 @@ class MetadataGenerator:
         
         _log(f"   📚 보조자료 {order}: {display_name} ({file_type})")
         
-        _log(f"      🔄 PDF 변환 중...")
-        pdf_path = self.converter.convert(file_path_str)
-        
-        _log(f"      📝 텍스트 추출 중...")
-        text_data = self.text_extractor.extract_with_markers(pdf_path, prefix=f"SUPP{order}")
-        
-        _log(f"      ✅ 완료 ({text_data['total_pages']}페이지)")
+        # ✅ PPTX는 직접 텍스트 추출 (PDF 변환 건너뜀)
+        if file_type == 'pptx':
+            print(f"      📝 PPTX 직접 텍스트 추출 중... (PDF 변환 건너뜀)")
+            from pptx import Presentation
+            
+            prs = Presentation(file_path_str)
+            pages_text = []
+            total_pages = 0
+            
+            for slide_num, slide in enumerate(prs.slides, 1):
+                total_pages += 1
+                
+                # 슬라이드 제목 추출
+                title = "No Title"
+                if slide.shapes.title and slide.shapes.title.text.strip():
+                    title = slide.shapes.title.text.strip()[:50]
+                
+                # 페이지 마커
+                pages_text.append(f"[SUPP{order}-PAGE {slide_num}: {title}]")
+                
+                # 슬라이드 내용 추출
+                for shape in slide.shapes:
+                    if hasattr(shape, "text") and shape.text.strip():
+                        pages_text.append(shape.text.strip())
+                
+                pages_text.append("")  # 슬라이드 구분
+            
+            full_text = "\n".join(pages_text)
+            print(f"      ✅ 완료 ({total_pages}페이지)")
+            
+        else:
+            # 기존 방식: PDF 변환
+            print(f"      🔄 PDF 변환 중...")
+            pdf_path = self.converter.convert(file_path_str)
+            
+            print(f"      📝 텍스트 추출 중...")
+            text_data = self.text_extractor.extract_with_markers(pdf_path, prefix=f"SUPP{order}")
+            
+            full_text = text_data['full_text']
+            total_pages = text_data['total_pages']
+            
+            print(f"      ✅ 완료 ({total_pages}페이지)")
         
         return {
             "order": order,
             "filename": display_name,
             "file_type": file_type,
-            "total_pages": text_data['total_pages'],
+            "total_pages": total_pages,
             "content": {
-                "full_text": text_data['full_text']
+                "full_text": full_text
             }
         }
     
