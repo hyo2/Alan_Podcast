@@ -697,7 +697,12 @@ class ScriptGenerator:
             
             print(f"💵 LLM 비용: {format_cost(total_cost)}")
             
-            # ===== 최종 검증 및 보정 (간소화) =====
+            # ===== 최종 검증 및 보정 =====
+            # ✅ 보정은 최종 선택 후 1회만 실행 (비용 절감)
+            # 이어쓰기/하드캡 토큰 추적용 변수 초기화
+            postprocess_input_tokens = 0
+            postprocess_output_tokens = 0
+            
             current_len = measure(script_text)
             ratio = current_len / budget
             
@@ -705,11 +710,13 @@ class ScriptGenerator:
             logger.info("최종 검증 시작")
             logger.info("=" * 80)
             
-            # 1. 끊김 감지 → 이어쓰기
+            # 1. 끊김 감지 → 이어쓰기 (1회만)
             is_incomplete, incomplete_reason = is_script_truncated(script_text)
             if is_incomplete:
                 logger.warning(f"[끊김 감지] {incomplete_reason} → 이어쓰기")
-                script_text = continue_script_fallback(
+                
+                # ✅ 이어쓰기 실행 + 토큰 추적 (postprocess.py 수정됨!)
+                script_text, continue_usage = continue_script_fallback(
                     script_text=script_text,
                     budget=budget,
                     model=model,
@@ -717,22 +724,46 @@ class ScriptGenerator:
                     extract_text_fn=self._extract_text_from_gemini_response,
                     speaker_b_label=speaker_b_label,
                 )
+                
+                # ✅ 실제 토큰 사용량 적용
+                postprocess_input_tokens += continue_usage.get("input_tokens", 0)
+                postprocess_output_tokens += continue_usage.get("output_tokens", 0)
+                
+                logger.info(
+                    f"✅ 이어쓰기 토큰 (실제): "
+                    f"Input {continue_usage.get('input_tokens', 0):,}, "
+                    f"Output {continue_usage.get('output_tokens', 0):,}"
+                )
+                
                 script_text = clean_script(script_text)
                 current_len = measure(script_text)
                 ratio = current_len / budget
                 logger.info(f"[이어쓰기 후] {current_len}자 ({ratio:.1%})")
             
-            # 2. tolerance 초과 → 하드캡
-            if ratio > max_ratio:  # tolerance 최대치 초과 시 하드캡
+            # 2. tolerance 초과 → 하드캡 (1회만)
+            if ratio > max_ratio:
                 logger.error(f"[tolerance 초과] {current_len}자 ({ratio:.1%}) > {max_chars}자 ({max_ratio:.1%}) → 하드캡")
-                script_text = hard_cap_fallback(
+                
+                # ✅ 하드캡 실행 + 토큰 추적 (postprocess.py 수정됨!)
+                script_text, hardcap_usage = hard_cap_fallback(
                     script_text=script_text,
-                    budget=max_chars,  # tolerance 최대치를 목표로
+                    budget=max_chars,
                     model=model,
                     style=style,
                     extract_text_fn=self._extract_text_from_gemini_response,
                     speaker_b_label=speaker_b_label,
                 )
+                
+                # ✅ 실제 토큰 사용량 적용
+                postprocess_input_tokens += hardcap_usage.get("input_tokens", 0)
+                postprocess_output_tokens += hardcap_usage.get("output_tokens", 0)
+                
+                logger.info(
+                    f"✅ 하드캡 토큰 (실제): "
+                    f"Input {hardcap_usage.get('input_tokens', 0):,}, "
+                    f"Output {hardcap_usage.get('output_tokens', 0):,}"
+                )
+                
                 script_text = clean_script(script_text)
                 current_len = measure(script_text)
                 ratio = current_len / budget
@@ -741,6 +772,35 @@ class ScriptGenerator:
             # ===== 최종 결과 =====
             final_len = measure(script_text)
             final_ratio = final_len / budget
+            
+            # ✅ postprocess 토큰 합산
+            if postprocess_input_tokens > 0 or postprocess_output_tokens > 0:
+                logger.info("=" * 80)
+                logger.info("📊 후처리 토큰 집계")
+                logger.info(f"   이어쓰기/하드캡 Input:  {postprocess_input_tokens:,} tokens")
+                logger.info(f"   이어쓰기/하드캡 Output: {postprocess_output_tokens:,} tokens")
+                logger.info("=" * 80)
+                
+                # usage_with_cost 업데이트
+                total_input = input_tokens + postprocess_input_tokens
+                total_output = output_tokens + postprocess_output_tokens
+                total_cost_with_postprocess = calculate_llm_cost(total_input, total_output)
+                
+                usage_with_cost = {
+                    "input_tokens": total_input,
+                    "output_tokens": total_output,
+                    "total_tokens": total_input + total_output,
+                    "attempts": llm_usage.get('attempts', 4),
+                    "attempts_detail": llm_usage.get('attempts_detail', []),
+                    "postprocess": {
+                        "input_tokens": postprocess_input_tokens,
+                        "output_tokens": postprocess_output_tokens,
+                    },
+                    "cost_usd": total_cost_with_postprocess,
+                }
+                
+                logger.info(f"💵 총 LLM 비용 (후처리 포함): {format_cost(total_cost_with_postprocess)}")
+                print(f"💵 총 LLM 비용 (후처리 포함): {format_cost(total_cost_with_postprocess)}")
             
             logger.info("=" * 80)
             logger.info(f"[최종 결과] {final_len}자 ({final_ratio:.1%})")
