@@ -1078,22 +1078,29 @@ class ImprovedHybridFilterPipeline:
 {{
   "is_core_content": true/false,
   "reason": "판단 근거 (1문장)",
-  "description": "이미지 상세 설명 (핵심 콘텐츠일 때만, 2-3문장)"
+  "description": "이미지 설명 (is_core_content=true일 때만 작성)"
 }}
 
-✅ is_core_content = true 기준:
-- 주제를 구체적으로 설명하는 시각 자료 (차트, 그래프, 다이어그램, 도표, 만화)
-- 교육 내용을 직접 보여주는 삽화나 사진
-- 주변 텍스트와 긴밀하게 연결된 핵심 콘텐츠
+✅ is_core_content = true (STRICT 기준):
+- 강의 주제를 **직접** 설명하는 시각 자료 (차트, 그래프, 다이어그램, 체계표, 만화)
+- 학습 내용을 **구체적으로** 보여주는 핵심 자료
+- 주변 텍스트와 **긴밀하게 연결**되어 없으면 이해가 어려운 콘텐츠
 
-❌ is_core_content = false 기준:
-- 장식용 이미지 (아이콘, 배경, 테두리, 단순 도형)
-- 학습 상황 묘사 삽화 (선생님/학생 그림, 공부하는 모습 등) ⚠️ 중요!
-- 주제와 무관한 일반 이미지
+❌ is_core_content = false:
+- 장식용 요소 (아이콘, 배경, 테두리, 도형)
+- 학습 상황 묘사 (선생님/학생 그림, 공부하는 모습)
+- 일반적인 삽화나 분위기용 이미지
+- **주제와 약하게 연관**되거나 없어도 되는 이미지
 
-⚠️ description은 is_core_content가 true일 때만 작성하세요.
+📝 description 작성 (is_core_content=true일 때만):
+1. 이미지가 설명하는 핵심 개념 (1문장)
+2. 주요 구성 요소 2-3개 (1-2문장)
+3. 학습에 필수적인 정보 (1문장)
+
+⚠️ 중요: is_core_content=false는 description을 null로 반환하세요.
+         is_core_content=true로 판단했다면, 학습에 실제로 도움되는 상세한 설명을 작성하세요.
 """
-                
+             
                 response = self.model.generate_content([image_part, prompt])
                 
                 # ✅ 토큰 추적 (필터링 + 설명 통합)

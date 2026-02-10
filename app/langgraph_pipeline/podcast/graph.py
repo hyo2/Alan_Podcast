@@ -30,11 +30,6 @@ def extract_texts_node(state: PodcastState) -> PodcastState:
     main_sources = state.get('main_sources', [])
     aux_sources = state.get('aux_sources', [])
     
-    # ✅ V4: 체크포인트 정보 추출
-    session_id = state.get('session_id')
-    storage_prefix = state.get('storage_prefix')
-    checkpoint_callback = state.get('checkpoint_callback')
-    
     if not main_sources:
         return {
             **state,
@@ -48,23 +43,16 @@ def extract_texts_node(state: PodcastState) -> PodcastState:
         
         logger.info(f"Primary: {primary_file}, Supp: {len(supplementary_files)}개")
 
-        # ✅ V4: 체크포인트 콜백 전달
-        generator = MetadataGenerator(
-            checkpoint_callback=checkpoint_callback,
-            checkpoint_interval=5,
-        )
+        generator = MetadataGenerator()
         
         #  환경 변수 기반 경로 사용
         output_dir = get_temp_output_dir()
         temp_json_path = os.path.join(output_dir, f"temp_metadata_{uuid.uuid4().hex[:8]}.json")
         
-        # ✅ V4: session_id, storage_prefix 전달
         generated_path = generator.generate(
             primary_file=primary_file,
             supplementary_files=supplementary_files,
-            output_path=temp_json_path,
-            session_id=session_id,
-            storage_prefix=storage_prefix,
+            output_path=temp_json_path
         )
         
         # ✅ Vision 토큰 정보 수집
@@ -88,11 +76,20 @@ def extract_texts_node(state: PodcastState) -> PodcastState:
             if text:
                 images = primary.get("filtered_images", [])
                 if images:
-                    text += "\n\n=== [VISUAL CONTEXT] (Images in the document) ===\n"
+                    # ✅ 유효한 설명만 수집
+                    valid_descriptions = []
                     for img in images:
-                        desc = img.get("description", "")
+                        desc = img.get("description", "").strip()
                         page = img.get("page_number", "?")
-                        text += f"- Page {page}: {desc}\n"
+                        
+                        # 유효한 설명만 추가 (빈 문자열, "설명 없음", None 제외)
+                        if desc and desc not in ["설명 없음", "None", "null"]:
+                            valid_descriptions.append(f"- Page {page}: {desc}")
+                    
+                    # 유효한 설명이 하나라도 있으면 VISUAL CONTEXT 추가
+                    if valid_descriptions:
+                        text += "\n\n=== [VISUAL CONTEXT] (Images in the document) ===\n"
+                        text += "\n".join(valid_descriptions) + "\n"
                 
                 main_texts.append(text)
 
@@ -342,12 +339,7 @@ def generate_transcript_node(state: PodcastState) -> PodcastState:
                 
                 print(f"👁️  Vision (이미지 처리)")
                 print(f"   키워드 추출: {keyword_tokens:,} tokens (${keyword_tokens * pricing['vision']:.4f})")
-                # ✅ 이미지 개수 표시
-                images_analyzed = vision_usage.get("images_analyzed", 0)
-                if images_analyzed > 0:
-                    print(f"   이미지 분석:  {image_tokens:,} tokens ({images_analyzed}개 이미지) (${image_tokens * pricing['vision']:.4f})")
-                else:
-                    print(f"   이미지 분석:  {image_tokens:,} tokens (${image_tokens * pricing['vision']:.4f})")
+                print(f"   이미지 분석:  {image_tokens:,} tokens (${image_tokens * pricing['vision']:.4f})")
                 # ✅ 이미지 설명 생성 토큰 출력
                 if description_tokens > 0:
                     description_count = vision_usage.get("description_count", 0)
