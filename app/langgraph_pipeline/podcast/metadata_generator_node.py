@@ -129,7 +129,11 @@ class TextExtractor:
     V2: pdfplumber + OCR 통합
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        checkpoint_callback=None,  # 중간 저장 콜백
+        checkpoint_interval=5,     # 5페이지마다 저장
+    ):
         if not PDFPLUMBER_AVAILABLE:
             raise ImportError("pdfplumber가 필요합니다")
 
@@ -146,6 +150,11 @@ class TextExtractor:
         # ✅ V3: 샘플링 통계
         self._gemini_ocr_used_pages = 0
         self._gemini_ocr_skipped_pages = 0
+        
+        # ✅ V4: 체크포인트 관련
+        self.checkpoint_callback = checkpoint_callback
+        self.checkpoint_interval = checkpoint_interval
+        self._checkpoint_data = []  # 중간 저장용 데이터
 
     def _safe_parse_ocr_result(self, result):
         """
@@ -350,7 +359,13 @@ class TextExtractor:
 
         _log(f"🧪 OCR DEBUG 이미지 저장: {out_path}", level="DEBUG")
 
-    def extract_with_markers(self, pdf_path: str, prefix: str = "MAIN"): 
+    def extract_with_markers(
+        self, 
+        pdf_path: str, 
+        prefix: str = "MAIN",
+        session_id: str = None,      
+        storage_prefix: str = None,
+    ):
         """
             PDF에서 페이지별 텍스트 추출 + 마커 삽입
             pdfplumber 사용, 텍스트 부족 시 OCR 자동 수행
@@ -454,6 +469,39 @@ class TextExtractor:
                 pages_text.append(f"[{prefix}-PAGE {page_idx}: {title}]")
                 pages_text.append(text)
                 pages_text.append("")
+                
+                # ✅ V4: 중간 데이터 저장
+                self._checkpoint_data.append({
+                    "page_idx": page_idx,
+                    "title": title,
+                    "text": text,
+                })
+
+                # ✅ V4: N페이지마다 체크포인트 저장
+                if page_idx % self.checkpoint_interval == 0:
+                    if self.checkpoint_callback and session_id and storage_prefix:
+                        try:
+                            checkpoint_key = f"{storage_prefix}pipeline/ocr_checkpoint_{page_idx}.json"
+                            checkpoint_data = {
+                                "progress": {
+                                    "current_page": page_idx,
+                                    "total_pages": total_pages,
+                                    "ocr_count": ocr_count,
+                                },
+                                "pages": self._checkpoint_data.copy(),
+                                "gemini_stats": {
+                                    "used_pages": self._gemini_ocr_used_pages,
+                                    "skipped_pages": self._gemini_ocr_skipped_pages,
+                                },
+                            }
+                            
+                            self.checkpoint_callback(checkpoint_key, checkpoint_data)
+                            _log(
+                                f"   💾 체크포인트 저장: {page_idx}/{total_pages} 페이지 완료",
+                                level="INFO"
+                            )
+                        except Exception as e:
+                            _log(f"   ⚠️ 체크포인트 저장 실패: {e}", level="WARNING")
 
         if ocr_count:
             _log(f"   ✅ OCR 처리 완료: {ocr_count} 페이지", level="INFO")
@@ -583,9 +631,17 @@ class MetadataGenerator:
     주강의자료 + 보조자료 → metadata.json
     """
     
-    def __init__(self):
+    def __init__(
+        self,
+        checkpoint_callback=None,  # ✅ 추가
+        checkpoint_interval=5,     # ✅ 추가
+    ):
         self.converter = None
-        self.text_extractor = TextExtractor()
+        # ✅ V4: 체크포인트 콜백을 TextExtractor로 전달
+        self.text_extractor = TextExtractor(
+            checkpoint_callback=checkpoint_callback,
+            checkpoint_interval=checkpoint_interval,
+        )
         self.image_filter = ImprovedHybridFilterPipeline(auto_extract_keywords=True)
         # ✅ V3: ImageDescriptionGenerator 제거 (unified_vision_check에서 처리)
         # self.image_describer = ImageDescriptionGenerator()  # 더 이상 사용하지 않음
@@ -609,7 +665,9 @@ class MetadataGenerator:
         self,
         primary_file: str,
         supplementary_files: Optional[List[str]] = None,
-        output_path: str = "output/metadata.json"
+        output_path: str = "output/metadata.json",
+        session_id: str = None,      # ✅ 추가
+        storage_prefix: str = None,  # ✅ 추가
     ) -> str:
         """메타데이터 생성"""
         _log(f"\n{'='*120}")
@@ -626,7 +684,12 @@ class MetadataGenerator:
             self.converter = DocumentConverterNode(output_dir=temp_dir)
             
             _log("📄 [1/3] 주강의자료 처리 중...", level="INFO")
-            primary_metadata = self._process_primary_source(primary_file)
+            # ✅ V4: session_id, storage_prefix 전달
+            primary_metadata = self._process_primary_source(
+                primary_file,
+                session_id=session_id,
+                storage_prefix=storage_prefix,
+            )
             
             _log("\n📚 [2/3] 보조자료 처리 중...", level="INFO")
             supplementary_metadata = []
@@ -705,7 +768,12 @@ class MetadataGenerator:
                 "vision_tokens": vision_tokens
             }
     
-    def _process_primary_source(self, file_path: str) -> Dict[str, Any]:
+    def _process_primary_source(
+        self, 
+        file_path: str,
+        session_id: str = None,      # ✅ 추가
+        storage_prefix: str = None,  # ✅ 추가
+    ) -> Dict[str, Any]:
         """
         주강의자료 처리
         ✅ TXT/URL 지원 추가
@@ -769,12 +837,16 @@ class MetadataGenerator:
             
             # 2. 텍스트 추출
             _log(f"   📝 텍스트 추출 중...", level="INFO")
-            text_data = self.text_extractor.extract_with_markers(processed_path, prefix="MAIN")
+            text_data = self.text_extractor.extract_with_markers(
+                processed_path, 
+                prefix="MAIN",
+                session_id=session_id,
+                storage_prefix=storage_prefix,
+            )
             full_text = text_data['full_text']
             total_pages = text_data['total_pages']
             _log(f"   ✅ 텍스트 추출 완료: {len(full_text)}자", level="INFO")
             
-            # 3. 이미지 필터링
             # 3. 이미지 필터링
             _log(f"   🖼️  이미지 처리 중...", level="INFO")
             
@@ -792,7 +864,8 @@ class MetadataGenerator:
                 
                 # ✅ Gemini Fallback 사용 여부 전달
                 gemini_used = text_data.get('gemini_fallback_used', False)
-                all_images = extractor.extract(processed_path, skip_ocr=gemini_used)
+                # ✅ 항상 OCR 스킵 (TextExtractor가 이미 처리 + Gemini Vision 사용)
+                all_images = extractor.extract(processed_path, skip_ocr=True)
             
             else:
                 _log(f"   ⚠️  지원하지 않는 형식: {original_file_type}", level="WARNING")

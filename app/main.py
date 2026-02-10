@@ -58,6 +58,11 @@ def init_logging() -> None:
     for name in NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
 
+    # Azure SDK 로그는 헤더/HTTP dump가 많아서 WARNING으로 제한
+    logging.getLogger("azure").setLevel(logging.WARNING)
+    logging.getLogger("azure.core").setLevel(logging.WARNING)
+    logging.getLogger("azure.storage").setLevel(logging.WARNING)
+
     # uvicorn 로거도 동일 레벨로 정렬
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         logging.getLogger(name).setLevel(level)

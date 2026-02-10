@@ -109,3 +109,51 @@ def enqueue_session_job(
         "pop_receipt": getattr(res, "pop_receipt", None),
         "inserted_on": getattr(res, "inserted_on", None),
     }
+
+
+def enqueue_pipeline_step(
+    *,
+    session_id: str,
+    channel_id: str,
+    step: str,  # "extract_ocr", "extract_finalize", "script", "audio", "finalize"
+    options: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    파이프라인 단계별 작업을 Azure Storage Queue에 넣는다.
+    
+    ✅ Extract 2단계 분할:
+    - extract_ocr: OCR 수행
+    - extract_finalize: 텍스트 병합 + 메타데이터
+    """
+    if not session_id:
+        raise ValueError("session_id is required")
+    if not channel_id:
+        raise ValueError("channel_id is required")
+    
+    # ✅ 허용된 step 목록 (extract 분할)
+    valid_steps = ["extract_ocr", "extract_finalize", "script", "audio", "finalize"]
+    if step not in valid_steps:
+        raise ValueError(f"Invalid step: {step}. Must be one of {valid_steps}")
+
+    payload = {
+        "kind": "pipeline_step",  # ← 새로운 kind
+        "session_id": session_id,
+        "channel_id": channel_id,
+        "step": step,
+        "options": options or {},
+    }
+
+    qc = get_queue_client()
+
+    # JSON 문자열로 변환 후 Base64 인코딩
+    json_str = json.dumps(payload, ensure_ascii=False)
+    base64_str = base64.b64encode(json_str.encode('utf-8')).decode('ascii')
+    
+    res = qc.send_message(base64_str)
+
+    return {
+        "queue_name": qc.queue_name,
+        "message_id": getattr(res, "id", None),
+        "pop_receipt": getattr(res, "pop_receipt", None),
+        "inserted_on": getattr(res, "inserted_on", None),
+    }

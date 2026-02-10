@@ -650,22 +650,30 @@ class UniversalImageExtractor:
                     page_height = page.height
                     page_area = page_width * page_height
                     
-                    # ✅ OCR 스킵 처리
-                    if skip_ocr:
-                        page_text = ""
-                        page_title = f"Page {page_num + 1}"
-                        text_bboxes = []
-                        
-                        # 첫 페이지에만 로그 출력
-                        if page_num == 0:
-                            _log("      ⚡ OCR 스킵 (Gemini가 텍스트 추출 완료)", level="INFO")
-                    else:
-                        # 텍스트 추출 (OCR 포함)
-                        page_text = self._extract_text_with_ocr(pdf_path, page_num, min_length=100)
+                    # ✅ 텍스트 레이어 체크
+                    chars = page.chars
+                    has_text_layer = chars and len(chars) > 0
+
+                    if has_text_layer:
+                        # ✅ 케이스 1: 텍스트 레이어 있음 → pdfplumber bbox 사용
+                        text_bboxes = [
+                            {'x0': c['x0'], 'top': c['top'], 
+                            'x1': c['x1'], 'bottom': c['bottom']}
+                            for c in chars
+                        ]
+                        page_text = page.extract_text() or ""
                         page_title = self._extract_page_title(page_text)
                         
-                        # ===== 텍스트 bbox 추출 (중첩 체크용) =====
-                        text_bboxes = self._extract_text_bboxes_with_ocr(pdf_path, page_num)
+                        if page_num == 0:
+                            _log("   ✅ 텍스트 레이어 사용 (bbox 중첩 계산)", level="INFO")
+                    else:
+                        # ✅ 케이스 2: 텍스트 레이어 없음 → OCR bbox 스킵
+                        text_bboxes = []
+                        page_text = ""
+                        page_title = f"Page {page_num + 1}"
+                        
+                        if page_num == 0:
+                            _log("   ⚡ OCR 스킵 (TextExtractor 완료, Gemini Vision 사용 예정)", level="INFO")
                     
                     # ===== pdfplumber로 이미지 목록 가져오기 =====
                     images = page.images
