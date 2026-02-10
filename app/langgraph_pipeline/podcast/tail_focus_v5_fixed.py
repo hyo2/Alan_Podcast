@@ -602,20 +602,39 @@ class TailFocusV5Generator:
             logger.info(f"     텍스트: {len(texts)}개, 세그먼트: {len(segments)}개")
             
             # 부족하면 추가
+            MIN_DURATION = 0.5  # 최소 0.5초 보장
+            
             while len(segments) < len(texts):
                 last_end = segments[-1]['end'] if segments else 0.0
+                
+                # ✅ 오디오 끝에 도달했는지 체크
+                if last_end >= total_duration - 0.01:  # 0.01초 여유
+                    logger.warning(f"     ⚠️  오디오 끝 도달, 더 이상 세그먼트 추가 불가")
+                    logger.warning(f"        텍스트 {len(texts)}개 중 {len(segments)}개만 매칭됨")
+                    logger.warning(f"        → 스크립트 길이에 비해 TTS 오디오가 짧습니다")
+                    break
+                
                 # 평균 duration 계산
                 if segments:
                     avg_dur = sum([s['end'] - s['start'] for s in segments]) / len(segments)
                 else:
                     avg_dur = 5.0
                 
+                # ✅ 최소 duration 보장
+                new_end = min(last_end + avg_dur, total_duration)
+                actual_duration = new_end - last_end
+                
+                if actual_duration < MIN_DURATION:
+                    logger.warning(f"     ⚠️  세그먼트 추가 불가 (남은 시간 부족: {actual_duration:.2f}초 < {MIN_DURATION}초)")
+                    logger.warning(f"        텍스트 {len(texts)}개 중 {len(segments)}개만 매칭됨")
+                    break
+                
                 new_seg = {
                     'start': last_end,
-                    'end': min(last_end + avg_dur, total_duration)
+                    'end': new_end
                 }
                 segments.append(new_seg)
-                logger.info(f"     세그먼트 추가: {len(segments)}번째 ({new_seg['start']:.1f}초~{new_seg['end']:.1f}초)")
+                logger.info(f"     세그먼트 추가: {len(segments)}번째 ({new_seg['start']:.1f}초~{new_seg['end']:.1f}초, duration={actual_duration:.2f}초)")
             
             # 너무 많으면 제거
             while len(segments) > len(texts):

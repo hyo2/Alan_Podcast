@@ -596,7 +596,7 @@ class ScriptGenerator:
         # style override가 들어오면, self.style도 이 호출에 한해 덮어쓰기(로컬 변수로)
         style = style_from_prompt or self.style
 
-        # ✅ (추가) 대화형 여부는 style 결정 직후 확정해둔다 (UnboundLocalError 방지)
+        # ✅ 대화형 여부는 style 결정 직후 확정하기 (UnboundLocalError 방지)
         is_dialogue = (style != "lecture")
 
 

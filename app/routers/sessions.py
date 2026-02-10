@@ -3,7 +3,7 @@ import json
 from typing import Optional, List
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, UploadFile, File, Path, Form, Query, Depends, BackgroundTasks, Response
+from fastapi import APIRouter, UploadFile, File, Path, Form, Query, Depends, Response
 
 from app.dependencies.repos import (
     get_channel_repo,
@@ -14,7 +14,7 @@ from app.dependencies.auth import require_access
 
 from app.services.storage_service import get_storage
 from app.services.session_service import SessionService
-from app.services.queue_service import enqueue_session_job
+from app.services.queue_service import enqueue_session_job, enqueue_pipeline_step
 from app.utils.response import success_response, error_response
 from app.utils.error_codes import ErrorCodes
 from app.utils.session_helpers import to_iso_z, unwrap_response_tuple
@@ -280,12 +280,13 @@ async def create_session(
 
         # 10) Queue 메시지 enqueue (Functions QueueTrigger가 처리)
         try:
-            enqueue_session_job(
-                session_id=session_id,
-                channel_id=channel_id,
-                options=options,
-                kind="generate",
-            )
+            # ✅ Extract 2단계 분할: extract_ocr로 시작
+             enqueue_pipeline_step(
+                 session_id=session_id,
+                 channel_id=channel_id,
+                 step="extract_ocr",  # ← 첫 단계
+                 options=options,
+             )
         except Exception as qe:
             # 큐 enqueue 실패하면 세션을 failed로 바꾸고 에러 응답
             session_repo.update_session_fields(

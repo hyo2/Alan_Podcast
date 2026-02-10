@@ -30,6 +30,11 @@ def extract_texts_node(state: PodcastState) -> PodcastState:
     main_sources = state.get('main_sources', [])
     aux_sources = state.get('aux_sources', [])
     
+    # ✅ V4: 체크포인트 정보 추출
+    session_id = state.get('session_id')
+    storage_prefix = state.get('storage_prefix')
+    checkpoint_callback = state.get('checkpoint_callback')
+    
     if not main_sources:
         return {
             **state,
@@ -43,16 +48,23 @@ def extract_texts_node(state: PodcastState) -> PodcastState:
         
         logger.info(f"Primary: {primary_file}, Supp: {len(supplementary_files)}개")
 
-        generator = MetadataGenerator()
+        # ✅ V4: 체크포인트 콜백 전달
+        generator = MetadataGenerator(
+            checkpoint_callback=checkpoint_callback,
+            checkpoint_interval=5,
+        )
         
         #  환경 변수 기반 경로 사용
         output_dir = get_temp_output_dir()
         temp_json_path = os.path.join(output_dir, f"temp_metadata_{uuid.uuid4().hex[:8]}.json")
         
+        # ✅ V4: session_id, storage_prefix 전달
         generated_path = generator.generate(
             primary_file=primary_file,
             supplementary_files=supplementary_files,
-            output_path=temp_json_path
+            output_path=temp_json_path,
+            session_id=session_id,
+            storage_prefix=storage_prefix,
         )
         
         # ✅ Vision 토큰 정보 수집
