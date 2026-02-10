@@ -1,0 +1,53 @@
+version: "3.8"
+
+services:
+  audiobook:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: audiobook
+    ports:
+      - "4001:80"
+    env_file:
+      - ./backend/.env.development
+    environment:
+      # Azure Functions 런타임 설정
+      - AzureWebJobsScriptRoot=/home/site/wwwroot
+      - AzureFunctionsJobHost__Logging__Console__IsEnabled=true
+      - AzureWebJobsFeatureFlags=EnableWorkerIndexing
+      - FUNCTIONS_WORKER_RUNTIME=python
+      # UTF-8 인코딩
+      - PYTHONIOENCODING=utf-8
+      - LANG=C.UTF-8
+      - LC_ALL=C.UTF-8
+      # Vertex AI 파일 경로 (컨테이너 내부 경로로 오버라이드)
+      - VERTEX_AI_SERVICE_ACCOUNT_FILE=/home/site/wwwroot/vertex-ai-service-account.json
+    volumes:
+      # 코드 변경 반영 (읽기+쓰기)
+      - ./backend/app:/home/site/wwwroot/app
+      - ./backend/middleware:/home/site/wwwroot/middleware
+      - ./backend/function_app.py:/home/site/wwwroot/function_app.py
+      - ./backend/config.py:/home/site/wwwroot/config.py
+      - ./backend/host.json:/home/site/wwwroot/host.json
+      - ./backend/vertex-ai-service-account.json:/home/site/wwwroot/vertex-ai-service-account.json:ro
+      - ./backend/local.settings.json:/home/site/wwwroot/local.settings.json:ro
+      # 출력 파일 영구 저장
+      - ./backend/outputs:/home/site/wwwroot/outputs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - audiobook-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  audiobook-network:
+    driver: bridge
