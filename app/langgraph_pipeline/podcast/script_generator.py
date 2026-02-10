@@ -181,7 +181,7 @@ def _generate_with_retry(
     # ✅ 토큰 사용량 추적
     total_input_tokens = 0
     total_output_tokens = 0
-    total_tokens = 0
+    # total_tokens는 사용하지 않음 (input + output으로 계산)
     attempts_detail = []  # ✅ 시도별 상세 내역
     
     candidates = []
@@ -310,14 +310,14 @@ def _generate_with_retry(
                     # 토큰 누적
                     total_input_tokens += usage.prompt_token_count
                     total_output_tokens += usage.candidates_token_count
-                    total_tokens += usage.total_token_count
+                    # total_tokens은 최종에 계산 (input + output)
                     
                     # ✅ 시도별 상세 내역 저장
                     attempts_detail.append({
                         "attempt": attempt,
                         "input_tokens": usage.prompt_token_count,
-                        "output_tokens": usage.candidates_token_count,
-                        "total_tokens": usage.total_token_count
+                        "output_tokens": usage.candidates_token_count
+                        # total_tokens은 자동 계산 (input + output)
                     })
                     
                     # logger와 print 둘 다 사용
@@ -371,7 +371,7 @@ def _generate_with_retry(
                     usage_metadata = {
                         "input_tokens": total_input_tokens,
                         "output_tokens": total_output_tokens,
-                        "total_tokens": total_tokens,
+                        "total_tokens": total_input_tokens + total_output_tokens,  # ✅ 직접 계산
                         "attempts": attempt,
                         "attempts_detail": attempts_detail  # ✅ 시도별 상세 내역
                     }
@@ -381,13 +381,13 @@ def _generate_with_retry(
                     logger.info(f"   총 시도: {attempt}회")
                     logger.info(f"   Input:  {total_input_tokens:,} tokens")
                     logger.info(f"   Output: {total_output_tokens:,} tokens")
-                    logger.info(f"   Total:  {total_tokens:,} tokens")
+                    logger.info(f"   Total:  {total_input_tokens + total_output_tokens:,} tokens")
                     
                     print(f"\n💰 LLM 토큰 사용량 요약:")
                     print(f"   총 시도: {attempt}회")
                     print(f"   Input:  {total_input_tokens:,} tokens")
                     print(f"   Output: {total_output_tokens:,} tokens")
-                    print(f"   Total:  {total_tokens:,} tokens")
+                    print(f"   Total:  {total_input_tokens + total_output_tokens:,} tokens")
                     
                     return title, script_text, candidates, usage_metadata
                 else:
@@ -448,7 +448,7 @@ def _generate_with_retry(
     usage_metadata = {
         "input_tokens": total_input_tokens,
         "output_tokens": total_output_tokens,
-        "total_tokens": total_tokens,
+        "total_tokens": total_input_tokens + total_output_tokens,  # ✅ 직접 계산
         "attempts": max_attempts,
         "attempts_detail": attempts_detail  # ✅ 시도별 상세 내역
     }
@@ -458,13 +458,13 @@ def _generate_with_retry(
     logger.info(f"   총 시도: {max_attempts}회 (전체 시도 완료)")
     logger.info(f"   Input:  {total_input_tokens:,} tokens")
     logger.info(f"   Output: {total_output_tokens:,} tokens")
-    logger.info(f"   Total:  {total_tokens:,} tokens")
+    logger.info(f"   Total:  {total_input_tokens + total_output_tokens:,} tokens")
     
     print(f"\n💰 LLM 토큰 사용량 요약:")
     print(f"   총 시도: {max_attempts}회 (전체 시도 완료)")
     print(f"   Input:  {total_input_tokens:,} tokens")
     print(f"   Output: {total_output_tokens:,} tokens")
-    print(f"   Total:  {total_tokens:,} tokens")
+    print(f"   Total:  {total_input_tokens + total_output_tokens:,} tokens")
     
     return best_title, best_script, candidates, usage_metadata
 
@@ -596,7 +596,7 @@ class ScriptGenerator:
         # style override가 들어오면, self.style도 이 호출에 한해 덮어쓰기(로컬 변수로)
         style = style_from_prompt or self.style
 
-        # ✅ 대화형 여부는 style 결정 직후 확정하기 (UnboundLocalError 방지)
+        # ✅ (추가) 대화형 여부는 style 결정 직후 확정해둔다 (UnboundLocalError 방지)
         is_dialogue = (style != "lecture")
 
 
@@ -715,8 +715,10 @@ class ScriptGenerator:
             if is_incomplete:
                 logger.warning(f"[끊김 감지] {incomplete_reason} → 이어쓰기")
                 
-                # ✅ 이어쓰기 실행 + 토큰 추적 (postprocess.py 수정됨!)
-                script_text, continue_usage = continue_script_fallback(
+                # ✅ 이어쓰기 실행 + 토큰 추적
+                # postprocess.py가 수정되기 전까지는 토큰 추적 불가
+                # TODO: continue_script_fallback이 usage 반환하도록 수정 필요
+                script_text = continue_script_fallback(
                     script_text=script_text,
                     budget=budget,
                     model=model,
@@ -725,14 +727,18 @@ class ScriptGenerator:
                     speaker_b_label=speaker_b_label,
                 )
                 
-                # ✅ 실제 토큰 사용량 적용
-                postprocess_input_tokens += continue_usage.get("input_tokens", 0)
-                postprocess_output_tokens += continue_usage.get("output_tokens", 0)
+                # ⚠️ 임시: 토큰 사용량 추정 (실제 추적 불가)
+                estimated_continue_tokens = {
+                    "input": int(current_len * 0.4),  # 기존 스크립트 + 프롬프트
+                    "output": int((budget - current_len) * 0.4),  # 추가 생성
+                }
+                postprocess_input_tokens += estimated_continue_tokens["input"]
+                postprocess_output_tokens += estimated_continue_tokens["output"]
                 
-                logger.info(
-                    f"✅ 이어쓰기 토큰 (실제): "
-                    f"Input {continue_usage.get('input_tokens', 0):,}, "
-                    f"Output {continue_usage.get('output_tokens', 0):,}"
+                logger.warning(
+                    f"⚠️ 이어쓰기 토큰 추정: "
+                    f"Input ~{estimated_continue_tokens['input']:,}, "
+                    f"Output ~{estimated_continue_tokens['output']:,}"
                 )
                 
                 script_text = clean_script(script_text)
@@ -744,8 +750,9 @@ class ScriptGenerator:
             if ratio > max_ratio:
                 logger.error(f"[tolerance 초과] {current_len}자 ({ratio:.1%}) > {max_chars}자 ({max_ratio:.1%}) → 하드캡")
                 
-                # ✅ 하드캡 실행 + 토큰 추적 (postprocess.py 수정됨!)
-                script_text, hardcap_usage = hard_cap_fallback(
+                # ✅ 하드캡 실행 + 토큰 추적
+                # TODO: hard_cap_fallback이 usage 반환하도록 수정 필요
+                script_text = hard_cap_fallback(
                     script_text=script_text,
                     budget=max_chars,
                     model=model,
@@ -754,14 +761,18 @@ class ScriptGenerator:
                     speaker_b_label=speaker_b_label,
                 )
                 
-                # ✅ 실제 토큰 사용량 적용
-                postprocess_input_tokens += hardcap_usage.get("input_tokens", 0)
-                postprocess_output_tokens += hardcap_usage.get("output_tokens", 0)
+                # ⚠️ 임시: 토큰 사용량 추정
+                estimated_hardcap_tokens = {
+                    "input": int(current_len * 0.4),  # 긴 스크립트 + 압축 프롬프트
+                    "output": int(max_chars * 0.4),  # 압축된 결과
+                }
+                postprocess_input_tokens += estimated_hardcap_tokens["input"]
+                postprocess_output_tokens += estimated_hardcap_tokens["output"]
                 
-                logger.info(
-                    f"✅ 하드캡 토큰 (실제): "
-                    f"Input {hardcap_usage.get('input_tokens', 0):,}, "
-                    f"Output {hardcap_usage.get('output_tokens', 0):,}"
+                logger.warning(
+                    f"⚠️ 하드캡 토큰 추정: "
+                    f"Input ~{estimated_hardcap_tokens['input']:,}, "
+                    f"Output ~{estimated_hardcap_tokens['output']:,}"
                 )
                 
                 script_text = clean_script(script_text)
@@ -777,8 +788,8 @@ class ScriptGenerator:
             if postprocess_input_tokens > 0 or postprocess_output_tokens > 0:
                 logger.info("=" * 80)
                 logger.info("📊 후처리 토큰 집계")
-                logger.info(f"   이어쓰기/하드캡 Input:  {postprocess_input_tokens:,} tokens")
-                logger.info(f"   이어쓰기/하드캡 Output: {postprocess_output_tokens:,} tokens")
+                logger.info(f"   이어쓰기/하드캡 Input:  {postprocess_input_tokens:,} tokens (추정)")
+                logger.info(f"   이어쓰기/하드캡 Output: {postprocess_output_tokens:,} tokens (추정)")
                 logger.info("=" * 80)
                 
                 # usage_with_cost 업데이트
@@ -795,6 +806,7 @@ class ScriptGenerator:
                     "postprocess": {
                         "input_tokens": postprocess_input_tokens,
                         "output_tokens": postprocess_output_tokens,
+                        "estimated": True,  # ⚠️ 추정치 표시
                     },
                     "cost_usd": total_cost_with_postprocess,
                 }
