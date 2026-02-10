@@ -17,7 +17,7 @@ from app.services.session_service import SessionService
 from app.services.queue_service import enqueue_session_job, enqueue_pipeline_step
 from app.utils.response import success_response, error_response
 from app.utils.error_codes import ErrorCodes
-from app.utils.session_helpers import to_iso_z, unwrap_response_tuple
+from app.utils.session_helpers import to_iso_z, unwrap_response_tuple, normalize_current_step, get_public_progress
 
 router = APIRouter(prefix="/v1", tags=["sessions"], dependencies=[Depends(require_access)],)
 
@@ -312,8 +312,8 @@ async def create_session(
                 data={
                     "session_id": session_id,
                     "status": "processing",
-                    "progress": 0,
-                    "current_step": session.get("current_step") or "파일 업로드 완료 및 변환 시작",
+                    "progress": get_public_progress(session.get("current_step"), status="processing"),
+                    "current_step": normalize_current_step(session.get("current_step"), status="processing"),
                     "created_at": created_at,
                 },
                 status_code=201,
@@ -361,20 +361,10 @@ async def get_session(
                 status_code=404,
             ),
         )
-
-    step_progress = {
-        "start": 0,
-        "파일 업로드 시작": 5,
-        "파일 업로드 완료 및 변환 시작": 10,
-        "extract_complete": 30,
-        "combine_complete": 40,
-        "script_complete": 60,
-        "audio_complete": 80,
-        "merge_complete": 90,
-        "completed": 100,
-        "error": -1,
-    }
-    progress = step_progress.get(session.get("current_step"), 0)
+    
+    raw_step = session.get("current_step")
+    public_step = normalize_current_step(raw_step, status=session.get("status"))
+    progress = get_public_progress(raw_step, status=session.get("status"))
 
     result = None
     error = session.get("error_message")
@@ -405,7 +395,7 @@ async def get_session(
                 "session_id": session_id,
                 "status": session["status"],
                 "progress": progress,
-                "current_step": session.get("current_step") or "",
+                "current_step": public_step,
                 "result": result,
                 "error": error,
                 "created_at": created_at,
@@ -438,22 +428,10 @@ async def list_sessions(
     rows = session_repo.list_sessions_by_channel(channel_id, limit=limit, offset=offset)
     total = len(rows)
 
-    step_progress = {
-        "start": 0,
-        "파일 업로드 시작": 5,
-        "파일 업로드 완료 및 변환 시작": 10,
-        "extract_complete": 30,
-        "combine_complete": 40,
-        "script_complete": 60,
-        "audio_complete": 80,
-        "merge_complete": 90,
-        "completed": 100,
-        "error": -1,
-    }
-
     sessions_list = []
     for s in rows:
-        progress = step_progress.get(s.get("current_step"), 0)
+        raw_step = s.get("current_step")
+        progress = get_public_progress(raw_step, status=s.get("status"))
         sessions_list.append(
             {
                 "session_id": s["session_id"],
