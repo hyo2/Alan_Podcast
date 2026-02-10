@@ -1,16 +1,11 @@
 """
-Metadata Generator Node (V3 - Unified Vision API)
-==================================================
+Metadata Generator Node (V2 - pdfplumber 전환)
+===============================================
 
-V3 변경사항 (통합 최적화):
-- improved_hybrid_filter V5 (Unified Vision API) 통합
-- 이미지 설명이 필터링 단계에서 이미 생성됨 ✅
-- ImageDescriptionGenerator 사용 중단 (description 이미 존재)
-- Vision API 호출 중복 제거로 33% 비용 절감
-
-V2 변경사항:
+변경사항:
 - PyMuPDF 완전 제거
 - pdfplumber + OCR (pypdfium2 + PaddleOCR)로 통합
+- improved_hybrid_filter.py V3와 완전 호환
 
 입력:
 - primary_file: 주강의자료 (1개, 필수)
@@ -21,10 +16,10 @@ V2 변경사항:
 
 통합:
 - DocumentConverterNode: PDF 변환 + TXT/URL 처리
-- ImprovedHybridFilterPipeline: 이미지 필터링 + 설명 (통합!) ✅
+- ImprovedHybridFilterPipeline: 이미지 필터링
 - TextExtractor: 페이지별 텍스트 추출
+- ImageDescriptionGenerator: 이미지 상세 설명
 
-✅ 최적화: Vision API 중복 호출 제거로 33% 처리 속도 향상!
 """
 
 import os
@@ -129,11 +124,7 @@ class TextExtractor:
     V2: pdfplumber + OCR 통합
     """
 
-    def __init__(
-        self,
-        checkpoint_callback=None,  # 중간 저장 콜백
-        checkpoint_interval=5,     # 5페이지마다 저장
-    ):
+    def __init__(self):
         if not PDFPLUMBER_AVAILABLE:
             raise ImportError("pdfplumber가 필요합니다")
 
@@ -150,11 +141,6 @@ class TextExtractor:
         # ✅ V3: 샘플링 통계
         self._gemini_ocr_used_pages = 0
         self._gemini_ocr_skipped_pages = 0
-        
-        # ✅ V4: 체크포인트 관련
-        self.checkpoint_callback = checkpoint_callback
-        self.checkpoint_interval = checkpoint_interval
-        self._checkpoint_data = []  # 중간 저장용 데이터
 
     def _safe_parse_ocr_result(self, result):
         """
@@ -359,13 +345,7 @@ class TextExtractor:
 
         _log(f"🧪 OCR DEBUG 이미지 저장: {out_path}", level="DEBUG")
 
-    def extract_with_markers(
-        self, 
-        pdf_path: str, 
-        prefix: str = "MAIN",
-        session_id: str = None,      
-        storage_prefix: str = None,
-    ):
+    def extract_with_markers(self, pdf_path: str, prefix: str = "MAIN"): 
         """
             PDF에서 페이지별 텍스트 추출 + 마커 삽입
             pdfplumber 사용, 텍스트 부족 시 OCR 자동 수행
@@ -469,39 +449,6 @@ class TextExtractor:
                 pages_text.append(f"[{prefix}-PAGE {page_idx}: {title}]")
                 pages_text.append(text)
                 pages_text.append("")
-                
-                # ✅ V4: 중간 데이터 저장
-                self._checkpoint_data.append({
-                    "page_idx": page_idx,
-                    "title": title,
-                    "text": text,
-                })
-
-                # ✅ V4: N페이지마다 체크포인트 저장
-                if page_idx % self.checkpoint_interval == 0:
-                    if self.checkpoint_callback and session_id and storage_prefix:
-                        try:
-                            checkpoint_key = f"{storage_prefix}pipeline/ocr_checkpoint_{page_idx}.json"
-                            checkpoint_data = {
-                                "progress": {
-                                    "current_page": page_idx,
-                                    "total_pages": total_pages,
-                                    "ocr_count": ocr_count,
-                                },
-                                "pages": self._checkpoint_data.copy(),
-                                "gemini_stats": {
-                                    "used_pages": self._gemini_ocr_used_pages,
-                                    "skipped_pages": self._gemini_ocr_skipped_pages,
-                                },
-                            }
-                            
-                            self.checkpoint_callback(checkpoint_key, checkpoint_data)
-                            _log(
-                                f"   💾 체크포인트 저장: {page_idx}/{total_pages} 페이지 완료",
-                                level="INFO"
-                            )
-                        except Exception as e:
-                            _log(f"   ⚠️ 체크포인트 저장 실패: {e}", level="WARNING")
 
         if ocr_count:
             _log(f"   ✅ OCR 처리 완료: {ocr_count} 페이지", level="INFO")
@@ -631,20 +578,11 @@ class MetadataGenerator:
     주강의자료 + 보조자료 → metadata.json
     """
     
-    def __init__(
-        self,
-        checkpoint_callback=None,  # ✅ 추가
-        checkpoint_interval=5,     # ✅ 추가
-    ):
+    def __init__(self):
         self.converter = None
-        # ✅ V4: 체크포인트 콜백을 TextExtractor로 전달
-        self.text_extractor = TextExtractor(
-            checkpoint_callback=checkpoint_callback,
-            checkpoint_interval=checkpoint_interval,
-        )
+        self.text_extractor = TextExtractor()
         self.image_filter = ImprovedHybridFilterPipeline(auto_extract_keywords=True)
-        # ✅ V3: ImageDescriptionGenerator 제거 (unified_vision_check에서 처리)
-        # self.image_describer = ImageDescriptionGenerator()  # 더 이상 사용하지 않음
+        self.image_describer = ImageDescriptionGenerator()
         self.debug = True  # 🔧 DEBUG 항상 켜기 (원인 파악용)
             
     def _extract_page_title(self, slide_title: str, adjacent_text: str) -> str:
@@ -665,9 +603,7 @@ class MetadataGenerator:
         self,
         primary_file: str,
         supplementary_files: Optional[List[str]] = None,
-        output_path: str = "output/metadata.json",
-        session_id: str = None,      # ✅ 추가
-        storage_prefix: str = None,  # ✅ 추가
+        output_path: str = "output/metadata.json"
     ) -> str:
         """메타데이터 생성"""
         _log(f"\n{'='*120}")
@@ -684,12 +620,7 @@ class MetadataGenerator:
             self.converter = DocumentConverterNode(output_dir=temp_dir)
             
             _log("📄 [1/3] 주강의자료 처리 중...", level="INFO")
-            # ✅ V4: session_id, storage_prefix 전달
-            primary_metadata = self._process_primary_source(
-                primary_file,
-                session_id=session_id,
-                storage_prefix=storage_prefix,
-            )
+            primary_metadata = self._process_primary_source(primary_file)
             
             _log("\n📚 [2/3] 보조자료 처리 중...", level="INFO")
             supplementary_metadata = []
@@ -707,11 +638,20 @@ class MetadataGenerator:
             _log("\n🔧 [3/3] 메타데이터 통합 중...", level="INFO")
             
             # ✅ Vision 토큰 통계 수집
-            # ✅ V3: Vision 토큰은 image_filter에서 이미 완전히 추적됨 (필터링+설명 통합)
             vision_tokens = {}
             if hasattr(self.image_filter, 'vision_tokens'):
                 vision_tokens = self.image_filter.vision_tokens.copy()
-                _log(f"   📊 Vision 토큰 (통합): {vision_tokens}", level="DEBUG")
+                _log(f"   image_filter.vision_tokens = {vision_tokens}", level="DEBUG")
+            
+            # ✅ 이미지 설명 생성 토큰 추가
+            _log(f"   image_describer.total_tokens = {self.image_describer.total_tokens}", level="DEBUG")
+            _log(f"   image_describer.description_count = {self.image_describer.description_count}", level="DEBUG")
+            
+            if self.image_describer.total_tokens > 0:
+                vision_tokens['image_description'] = self.image_describer.total_tokens
+                vision_tokens['description_count'] = self.image_describer.description_count
+                vision_tokens['total'] = vision_tokens.get('total', 0) + self.image_describer.total_tokens
+                _log(f"   vision_tokens after adding image_description = {vision_tokens}", level="DEBUG")
             
             # ✅ 비용 계산
             if vision_tokens.get('total', 0) > 0:
@@ -742,23 +682,19 @@ class MetadataGenerator:
                 total_supp_pages = sum(s['total_pages'] for s in supplementary_metadata)
                 _log(f"📚 보조자료 페이지: {total_supp_pages}개", level="INFO")
             
-            # ✅ Vision 토큰 통계 출력 (V3: 통합 버전)
+            # ✅ Vision 토큰 통계 출력
             if vision_tokens:
-                _log(f"\n💰 Vision API 사용 통계 (통합 최적화):", level="INFO")
+                _log(f"\n💰 Vision API 사용 통계:", level="INFO")
                 if 'keyword_extraction' in vision_tokens:
-                    _log(f"   📝 키워드 추출: {vision_tokens['keyword_extraction']:,} tokens (1회)", level="INFO")
+                    _log(f"   📝 키워드 추출: {vision_tokens['keyword_extraction']:,} tokens", level="INFO")
                 if 'image_filtering' in vision_tokens:
-                    images_count = vision_tokens.get('images_analyzed', 0)
-                    _log(f"   🔍 이미지 분석 (필터링+설명 통합): {vision_tokens['image_filtering']:,} tokens ({images_count}개 이미지)", level="INFO")
-                    # 평균 토큰 계산
-                    if images_count > 0:
-                        avg_tokens = vision_tokens['image_filtering'] / images_count
-                        _log(f"      - 평균: {avg_tokens:.0f} tokens/image (필터링+설명 포함)", level="INFO")
+                    _log(f"   🔍 이미지 필터링: {vision_tokens['image_filtering']:,} tokens", level="INFO")
+                if 'image_description' in vision_tokens:
+                    _log(f"   📸 이미지 설명 생성: {vision_tokens['image_description']:,} tokens ({vision_tokens['description_count']}개)", level="INFO")
                 if 'total' in vision_tokens:
                     _log(f"   📊 Total: {vision_tokens['total']:,} tokens", level="INFO")
                 if 'cost_usd' in vision_tokens:
                     _log(f"   💵 비용: {format_cost(vision_tokens['cost_usd'])}", level="INFO")
-                _log(f"   ⚡ 최적화: 통합 API 호출로 33% 속도 향상", level="INFO")
             
             print(f"{'='*120}\n")
             
@@ -768,12 +704,7 @@ class MetadataGenerator:
                 "vision_tokens": vision_tokens
             }
     
-    def _process_primary_source(
-        self, 
-        file_path: str,
-        session_id: str = None,      # ✅ 추가
-        storage_prefix: str = None,  # ✅ 추가
-    ) -> Dict[str, Any]:
+    def _process_primary_source(self, file_path: str) -> Dict[str, Any]:
         """
         주강의자료 처리
         ✅ TXT/URL 지원 추가
@@ -837,16 +768,12 @@ class MetadataGenerator:
             
             # 2. 텍스트 추출
             _log(f"   📝 텍스트 추출 중...", level="INFO")
-            text_data = self.text_extractor.extract_with_markers(
-                processed_path, 
-                prefix="MAIN",
-                session_id=session_id,
-                storage_prefix=storage_prefix,
-            )
+            text_data = self.text_extractor.extract_with_markers(processed_path, prefix="MAIN")
             full_text = text_data['full_text']
             total_pages = text_data['total_pages']
             _log(f"   ✅ 텍스트 추출 완료: {len(full_text)}자", level="INFO")
             
+            # 3. 이미지 필터링
             # 3. 이미지 필터링
             _log(f"   🖼️  이미지 처리 중...", level="INFO")
             
@@ -864,8 +791,7 @@ class MetadataGenerator:
                 
                 # ✅ Gemini Fallback 사용 여부 전달
                 gemini_used = text_data.get('gemini_fallback_used', False)
-                # ✅ 항상 OCR 스킵 (TextExtractor가 이미 처리 + Gemini Vision 사용)
-                all_images = extractor.extract(processed_path, skip_ocr=True)
+                all_images = extractor.extract(processed_path, skip_ocr=gemini_used)
             
             else:
                 _log(f"   ⚠️  지원하지 않는 형식: {original_file_type}", level="WARNING")
@@ -881,9 +807,14 @@ class MetadataGenerator:
                 decision, reason = self.image_filter.step1_rule_check(img_meta)
                 
                 if decision == "INCLUDE":
-                    img_meta.is_core_content = True
-                    img_meta.filter_reason = reason
-                    filtered_images.append(img_meta)
+                    # ✅ V3: Rule 통과도 AI로 검증 + 설명 생성
+                    result = self.image_filter.unified_vision_check(img_meta)
+                    
+                    if result["is_core"]:
+                        img_meta.is_core_content = True
+                        img_meta.description = result["description"] or ""
+                        img_meta.filter_reason = f"Rule+AI: {result['reason']}"
+                        filtered_images.append(img_meta)
                     
                 elif decision == "PENDING":
                     # ✅ V3: unified_vision_check 사용 (필터링 + 설명 통합)
@@ -891,13 +822,13 @@ class MetadataGenerator:
                     
                     if result["is_core"]:
                         img_meta.is_core_content = True
-                        img_meta.description = result["description"] or ""  # ✅ 설명 저장
+                        img_meta.description = result["description"] or ""
                         img_meta.filter_reason = result["reason"]
                         filtered_images.append(img_meta)
             
             _log(f"   ✅ 필터링 완료: {len(filtered_images)}개 선택")
         
-        # 5. 이미지 설명 생성
+        # 5. 이미지 메타데이터 구성
         filtered_image_metadata = []
         
         if filtered_images:
@@ -916,12 +847,12 @@ class MetadataGenerator:
                     "page_number": img_meta.slide_number,
                     "page_title": page_title,
                     "description": img_meta.description or "설명 없음",  # ✅ 이미 생성됨
-                    "filter_stage": "1차 (Rule)" if "Rule" in img_meta.filter_reason else "2차 (AI-통합)",
+                    "filter_stage": "1차 (Rule+AI)" if "Rule+AI" in img_meta.filter_reason else "2차 (AI)",
                     "area_percentage": img_meta.area_percentage
                 })
             
-            _log(f"   ✅ 메타데이터 구성 완료: {len(filtered_images)}개", level="INFO")
-            _log(f"   ⚡ 최적화: 통합 Vision API로 설명 생성 중복 제거\n", level="INFO")
+            _log(f"   ✅ 메타데이터 구성 완료: {len(filtered_image_metadata)}개", level="INFO")
+            _log(f"   ⚡ 최적화: 통합 Vision API로 설명 생성 중복 제거", level="INFO")
 
         # 6. 통계
         total_images = len(all_images)
