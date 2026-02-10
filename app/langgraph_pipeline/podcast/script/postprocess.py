@@ -202,7 +202,18 @@ def hard_cap_fallback(
     style: str,
     extract_text_fn,
     speaker_b_label: str = "학생",
-) -> str:
+) -> tuple[str, dict]:
+    """
+    하드캡 fallback - 긴 스크립트 압축
+    
+    Returns:
+        tuple[str, dict]: (compressed_script, usage_metadata)
+            usage_metadata = {
+                "input_tokens": int,
+                "output_tokens": int,
+                "total_tokens": int,
+            }
+    """
     is_dialogue = (style != "lecture")
     # 10분/15분에서 0.75는 너무 공격적이라 컷 비율을 상향
     if budget <= 2200:      # 5분(2000자) 근처
@@ -319,16 +330,39 @@ def hard_cap_fallback(
 
 [핵심 요약 (2-3문장)]
 """.strip()
+        
+        # ✅ 토큰 추적 초기화
+        summary_usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        }
+        
         try:
             summary_resp = model.generate_content(
                 summary_prompt,
                 generation_config={"max_output_tokens": 512, "temperature": 0.2}
             )
+            
+            # ✅ 요약 토큰 추적
+            if hasattr(summary_resp, 'usage_metadata'):
+                usage_meta = summary_resp.usage_metadata
+                summary_usage["input_tokens"] = usage_meta.prompt_token_count
+                summary_usage["output_tokens"] = usage_meta.candidates_token_count
+                summary_usage["total_tokens"] = usage_meta.total_token_count
+            
             summary = extract_text_fn(summary_resp).strip()
             logger.info(f"[하드캡] 전체 요약 생성 ({len(summary)}자)")
         except Exception as e:
             logger.warning(f"[하드캡] 요약 생성 실패: {e}")
             summary = ""
+    else:
+        # ✅ 요약 생성 안 할 때
+        summary_usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        }
 
 
     if is_dialogue:
@@ -401,6 +435,20 @@ def hard_cap_fallback(
             closing_prompt,
             generation_config={"max_output_tokens": min(2048, max(256, remaining_budget * 3)), "temperature": 0.2},
         )
+        
+        # ✅ 클로징 토큰 추적
+        closing_usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        }
+        
+        if hasattr(resp, 'usage_metadata'):
+            usage_meta = resp.usage_metadata
+            closing_usage["input_tokens"] = usage_meta.prompt_token_count
+            closing_usage["output_tokens"] = usage_meta.candidates_token_count
+            closing_usage["total_tokens"] = usage_meta.total_token_count
+        
         closing = clean_script(extract_text_fn(resp))
 
         if estimate_korean_chars_for_budget(closing) < 80:
@@ -410,11 +458,37 @@ def hard_cap_fallback(
         if is_dialogue and not re.search(r"「선생님」[^\[]*$", closing, re.DOTALL):
             closing = closing.rstrip() + "\n「선생님」: 오늘 배운 내용을 잘 복습하시고, 다음 시간에 또 뵙겠습니다. 수고하셨습니다!"
 
-        return (truncated + "\n" + closing).strip()
+        # ✅ 총 토큰 합산 (요약 + 클로징)
+        total_usage = {
+            "input_tokens": summary_usage["input_tokens"] + closing_usage["input_tokens"],
+            "output_tokens": summary_usage["output_tokens"] + closing_usage["output_tokens"],
+            "total_tokens": summary_usage["total_tokens"] + closing_usage["total_tokens"],
+        }
+        
+        logger.info(
+            f"[하드캡 토큰] 요약: Input {summary_usage['input_tokens']:,}, Output {summary_usage['output_tokens']:,}"
+        )
+        logger.info(
+            f"[하드캡 토큰] 클로징: Input {closing_usage['input_tokens']:,}, Output {closing_usage['output_tokens']:,}"
+        )
+        logger.info(
+            f"[하드캡 토큰] 총합: Input {total_usage['input_tokens']:,}, Output {total_usage['output_tokens']:,}, Total {total_usage['total_tokens']:,}"
+        )
+        
+        result = (truncated + "\n" + closing).strip()
+        return result, total_usage
 
     except Exception as e:
         logger.error(f"[하드캡] 마무리 생성 오류: {e}")
-        return (truncated + "\n" + get_default_closing(is_dialogue, last_speaker if is_dialogue else None, speaker_b_label=speaker_b_label)).strip()
+        result = (truncated + "\n" + get_default_closing(is_dialogue, last_speaker if is_dialogue else None, speaker_b_label=speaker_b_label)).strip()
+        
+        # 오류 시 토큰 0
+        error_usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        }
+        return result, error_usage
 
 def continue_script_fallback(
     script_text: str,
@@ -423,7 +497,18 @@ def continue_script_fallback(
     style: str,
     extract_text_fn,
     speaker_b_label: str = "학생",
-) -> str:
+) -> tuple[str, dict]:
+    """
+    이어쓰기 fallback
+    
+    Returns:
+        tuple[str, dict]: (completed_script, usage_metadata)
+            usage_metadata = {
+                "input_tokens": int,
+                "output_tokens": int,
+                "total_tokens": int,
+            }
+    """
     is_dialogue = (style != "lecture")
     current_len = estimate_korean_chars_for_budget(script_text)
     
@@ -439,7 +524,15 @@ def continue_script_fallback(
         lines = [ln.strip() for ln in script_text.splitlines() if ln.strip()]
         lines = _sanitize_trailing_lines(lines, is_dialogue=is_dialogue)
         base = "\n".join(lines).strip()
-        return (base + "\n" + get_default_closing(is_dialogue, speaker_b_label=speaker_b_label)).strip()
+        result = (base + "\n" + get_default_closing(is_dialogue, speaker_b_label=speaker_b_label)).strip()
+        
+        # ✅ LLM 호출 없이 종료 (토큰 0)
+        usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        }
+        return result, usage
     if is_dialogue:
         prompt = f"""
 다음은 대화형 팟캐스트 스크립트입니다. 
@@ -486,6 +579,26 @@ def continue_script_fallback(
             prompt,
             generation_config={"max_output_tokens": min(4096, max(512, remaining_budget * 3)), "temperature": 0.2},
         )
+        
+        # ✅ 토큰 추적
+        usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        }
+        
+        if hasattr(resp, 'usage_metadata'):
+            usage_meta = resp.usage_metadata
+            usage["input_tokens"] = usage_meta.prompt_token_count
+            usage["output_tokens"] = usage_meta.candidates_token_count
+            usage["total_tokens"] = usage_meta.total_token_count
+            
+            logger.info(
+                f"[이어쓰기 토큰] Input: {usage['input_tokens']:,}, "
+                f"Output: {usage['output_tokens']:,}, "
+                f"Total: {usage['total_tokens']:,}"
+            )
+        
         cont = clean_script(extract_text_fn(resp))
 
         # ✅ LLM이 이미 완결로 판단한 경우
@@ -494,7 +607,7 @@ def continue_script_fallback(
             # 혹시 꼬리가 미완이면 한 번 정리
             lines = [ln.strip() for ln in script_text.splitlines() if ln.strip()]
             lines = _sanitize_trailing_lines(lines, is_dialogue=is_dialogue)
-            return "\n".join(lines).strip()
+            return "\n".join(lines).strip(), usage
 
         if estimate_korean_chars_for_budget(cont) < 120:
             cont = get_default_closing(is_dialogue, speaker_b_label=speaker_b_label)
@@ -519,11 +632,20 @@ def continue_script_fallback(
                 # 중복 부분 찾아서 제거 (첫 100자 스킵)
                 cont = cont[100:] if len(cont) > 100 else cont
         
-        return (script_text.rstrip() + "\n" + cont.lstrip()).strip()
+        result = (script_text.rstrip() + "\n" + cont.lstrip()).strip()
+        return result, usage
 
     except Exception as e:
         logger.error(f"[이어쓰기 폴백] 오류: {e}")
-        return (script_text + "\n" + get_default_closing(is_dialogue, speaker_b_label=speaker_b_label)).strip()
+        result = (script_text + "\n" + get_default_closing(is_dialogue, speaker_b_label=speaker_b_label)).strip()
+        
+        # 오류 시 토큰 0
+        usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        }
+        return result, usage
 
 def expand_script_fallback(
     *,

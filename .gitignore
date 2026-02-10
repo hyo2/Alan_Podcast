@@ -193,3 +193,13 @@ local.settings.json
 
 # (선택) Azure Functions local storage emulator artifacts (가끔 생김)
 .azurefunctions/
+
+
+
+# ===================================
+# 로컬 환경 설정 파일 (무시)
+# ===================================
+docker-compose.yml
+host.json
+.dockerignore
+.funcignore
