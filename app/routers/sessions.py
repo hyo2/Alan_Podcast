@@ -1,5 +1,7 @@
 # app/routers/sessions.py
 import json
+import os
+import logging
 from typing import Optional, List
 from datetime import datetime, timezone
 
@@ -18,6 +20,9 @@ from app.services.queue_service import enqueue_session_job, enqueue_pipeline_ste
 from app.utils.response import success_response, error_response
 from app.utils.error_codes import ErrorCodes
 from app.utils.session_helpers import to_iso_z, unwrap_response_tuple, normalize_current_step, get_public_progress
+
+# ✅ Logger 초기화
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1", tags=["sessions"], dependencies=[Depends(require_access)],)
 
@@ -278,15 +283,55 @@ async def create_session(
             current_step="파일 업로드 완료 및 변환 시작",
         ) or session
 
+        # ✅ 9.5) LangSmith Root Run 생성 및 progress.json 초기화
+        try:
+            from langsmith import Client
+            from datetime import datetime
+            import uuid
+            
+            ls_client = Client()
+            
+            # ✅ 올바른 방식 - 직접 run 생성
+            root_run_id = str(uuid.uuid4())
+            
+            ls_client.create_run(
+                name=f"Audiobook: {session_id}",
+                run_type="chain",
+                inputs={
+                    "session_id": session_id,
+                    "channel_id": channel_id,
+                    "options": options,
+                },
+                id=root_run_id,
+                project_name=os.getenv("LANGSMITH_PROJECT", "ai-audiobook-dev"),
+                start_time=datetime.now(),
+            )
+            
+            logger.info(f"✅ LangSmith root run created: {root_run_id}")
+            
+        except Exception as e:
+            logger.warning(f"LangSmith root run 생성 실패: {e}")
+            root_run_id = None
+        
+        # ✅ progress.json 초기화 (root_run_id 포함)
+        progress_key = f"{storage_prefix}pipeline/progress.json"
+        progress_data = {
+            "session_id": session_id,
+            "completed_steps": [],
+            "current_step": "queued",
+            "intermediate_keys": {},
+            "langsmith_root_run_id": root_run_id,
+        }
+        storage.upload_json(progress_key, progress_data)
+
         # 10) Queue 메시지 enqueue (Functions QueueTrigger가 처리)
         try:
-            # ✅ Extract 2단계 분할: extract_ocr로 시작
-             enqueue_pipeline_step(
-                 session_id=session_id,
-                 channel_id=channel_id,
-                 step="extract_ocr",  # ← 첫 단계
-                 options=options,
-             )
+            enqueue_pipeline_step(
+                session_id=session_id,
+                channel_id=channel_id,
+                step="extract_ocr",
+                options=options,
+            )
         except Exception as qe:
             # 큐 enqueue 실패하면 세션을 failed로 바꾸고 에러 응답
             session_repo.update_session_fields(

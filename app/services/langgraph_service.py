@@ -2,7 +2,7 @@
 import os
 import logging
 from typing import List, Dict, Any, Callable, Optional
-
+from langsmith import traceable
 from app.langgraph_pipeline.podcast.graph import create_podcast_graph
 from app.langgraph_pipeline.podcast.state import PodcastState
 
@@ -14,6 +14,13 @@ class CancelledException(Exception):
     """세션이 삭제되어 작업이 종료된 경우"""
     pass
 
+@traceable(
+    run_type="chain",
+    project_name="ai-audiobook-dev",
+    metadata=lambda **kwargs: {
+        "session_id": kwargs.get("session_id"),
+    },
+)
 
 async def run_langgraph(
     main_sources: List[str],
@@ -28,6 +35,7 @@ async def run_langgraph(
     difficulty: str = "intermediate",
     user_prompt: str = "",
     step_callback: Optional[Callable[[str], None]] = None,
+    session_id: Optional[str] = None,
 
     # 삭제/취소 여부 판단 함수
     cancel_check: Optional[Callable[[], bool]] = None,
@@ -72,8 +80,16 @@ async def run_langgraph(
 
     _check_cancel("before execution")
 
-    config = {"configurable": {"thread_id": thread_id or f"run_{id(initial_state)}"}}
-
+    config = {
+        "configurable": {"thread_id": thread_id or f"session_{session_id}"},
+        "metadata": {
+            "session_id": session_id,
+            "style": style,
+            "duration": duration,
+        },
+        "tags": [f"session-{session_id}", f"duration-{duration}min"],
+    }
+    
     last_step = "start"
     final_state = None
 

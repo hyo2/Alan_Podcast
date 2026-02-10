@@ -190,6 +190,7 @@ class SessionService:
 
                     cancel_check=lambda: not session_exists(self.session_repo, session_id),
                     thread_id=f"session_{session_id}",
+                    session_id=session_id,
                 )
             except CancelledException as ce:
                 logger.info(f"사용자가 session {session_id}를 취소함: {ce}")

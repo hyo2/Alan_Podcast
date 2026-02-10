@@ -8,6 +8,15 @@ import azure.functions as func
 
 logger = logging.getLogger(__name__)
 
+# --- LangSmith manual tracing (safe fallback) ---
+try:
+    from langsmith import traceable
+except Exception:  # langsmith 미설치/환경 문제면 no-op
+    def traceable(*args, **kwargs):
+        def _decorator(fn):
+            return fn
+        return _decorator
+
 # ========================================
 # 1. FastAPI ASGI Wrapper (HTTP 트리거)
 # ========================================
@@ -23,6 +32,137 @@ async def http_app_func(req: func.HttpRequest) -> func.HttpResponse:
 
 
 # ========================================
+# LangSmith Trace 헬퍼 함수
+# ========================================
+
+def _get_root_run_id(storage, storage_prefix):
+    """Storage에서 LangSmith root_run_id 조회"""
+    try:
+        progress_key = f"{storage_prefix}pipeline/progress.json"
+        progress_data = storage.download_json(progress_key)
+        return progress_data.get("langsmith_root_run_id")
+    except Exception:
+        return None
+
+def _sanitize_for_langsmith(obj, *, max_str=4000, max_list=50, _depth=0, _max_depth=6):
+    """LangSmith inputs/outputs에 넣기 안전한 형태로 변환"""
+    if _depth > _max_depth:
+        return "<max_depth_reached>"
+
+    if obj is None or isinstance(obj, (bool, int, float)):
+        return obj
+
+    if isinstance(obj, str):
+        return obj if len(obj) <= max_str else obj[:max_str] + "…<truncated>"
+
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            # key는 문자열화
+            kk = str(k)
+            out[kk] = _sanitize_for_langsmith(v, max_str=max_str, max_list=max_list, _depth=_depth + 1)
+        return out
+
+    if isinstance(obj, (list, tuple)):
+        lst = list(obj)
+        if len(lst) > max_list:
+            lst = lst[:max_list] + ["…<truncated_list>"]
+        return [_sanitize_for_langsmith(x, max_str=max_str, max_list=max_list, _depth=_depth + 1) for x in lst]
+
+    # 그 외(함수/클래스/바이너리/객체 등)는 repr로
+    try:
+        s = repr(obj)
+    except Exception:
+        s = f"<unreprable:{type(obj).__name__}>"
+    return s if len(s) <= max_str else s[:max_str] + "…<truncated_repr>"
+
+
+def _trace_safe_state(state: dict) -> dict:
+    """trace에 넣으면 깨질만한 키 제거 + sanitize"""
+    if not isinstance(state, dict):
+        return {"_state": _sanitize_for_langsmith(state)}
+    drop_keys = {"checkpoint_callback"}  # 여기가 핵심
+    cleaned = {k: v for k, v in state.items() if k not in drop_keys}
+    return _sanitize_for_langsmith(cleaned)
+
+
+def _safe_jsonable(obj):
+    """Best-effort conversion to JSON-serializable structures for LangSmith."""
+    try:
+        json.dumps(obj)
+        return obj
+    except Exception:
+        if isinstance(obj, dict):
+            return {str(k): _safe_jsonable(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_safe_jsonable(x) for x in obj]
+        if hasattr(obj, "model_dump"):
+            try:
+                return obj.model_dump()
+            except Exception:
+                pass
+        if hasattr(obj, "__dict__"):
+            try:
+                return {k: _safe_jsonable(v) for k, v in obj.__dict__.items() if not k.startswith("_")}
+            except Exception:
+                pass
+        if isinstance(obj, (bytes, bytearray)):
+            return f"<{type(obj).__name__} len={len(obj)}>"
+        if isinstance(obj, (set, tuple)):
+            return [_safe_jsonable(x) for x in obj]
+        return str(obj)
+
+
+def _trace_with_parent(
+    name: str,
+    parent_run_id: str,
+    func,
+    state_input: dict,
+):
+    """
+    LangSmith child-run tracer that works even when each step runs in a different Azure Function invocation.
+
+    - Creates a *child* run whose parent_run_id is the LangSmith root run id stored in progress.json
+    - Stores state_input/state_output in Inputs/Outputs so you can inspect step-by-step state in LangSmith UI
+    """
+    try:
+        import datetime as _dt
+        from langsmith import Client  # type: ignore
+
+        client = Client()
+
+        safe_in = _safe_jsonable(state_input)
+        child = client.create_run(
+            name=name,
+            run_type="chain",
+            parent_run_id=parent_run_id,
+            inputs={"state": safe_in},
+            extra={"azure_function": True},
+        )
+        child_id = child.get("id") or child.get("run_id") or child.get("uuid")
+
+        try:
+            result = func(state_input)
+            safe_out = _safe_jsonable(result)
+            client.update_run(
+                child_id,
+                outputs={"state": safe_out},
+                end_time=_dt.datetime.utcnow(),
+            )
+            return result
+        except Exception as e:
+            client.update_run(
+                child_id,
+                error=str(e),
+                end_time=_dt.datetime.utcnow(),
+            )
+            raise
+
+    except Exception as e:
+        logger.warning(f"[LangSmith] trace 실패({name}): {e}")
+        return func(state_input)
+
+# ========================================
 # 2. Queue Trigger (백그라운드 워커)
 # ========================================
 _QUEUE_NAME = os.getenv("AZURE_STORAGE_QUEUE_NAME", "ai-audiobook-jobs")
@@ -36,10 +176,9 @@ _QUEUE_NAME = os.getenv("AZURE_STORAGE_QUEUE_NAME", "ai-audiobook-jobs")
 )
 def session_job_worker(msg: func.QueueMessage) -> None:
     """큐에서 세션 처리 작업을 가져와 실행"""
-    import base64
     
     raw = msg.get_body().decode("utf-8", errors="replace")
-    logger.info("[Queue] Received message: %s", raw[:200])
+    logger.info("[Queue] Received messagea: %s", raw[:200])
 
     try:
         # Base64 디코딩 시도 (enqueue_session_job에서 Base64 인코딩됨)
@@ -222,6 +361,24 @@ def _execute_pipeline_step(
     session_input_repo,
 ) -> None:
     """실제 단계별 실행 로직"""
+    
+    # ✅ LangSmith trace에 session 정보 추가
+    try:
+        from langsmith import get_current_run_tree
+        current_run = get_current_run_tree()
+        if current_run:
+            current_run.add_tags([
+                f"session-{session_id}",
+                f"step-{step}",
+            ])
+            current_run.add_metadata({
+                "session_id": session_id,
+                "channel_id": channel_id,
+                "step": step,
+            })
+    except Exception:
+        pass  # LangSmith 없으면 무시
+    
     try:
         # ===== resume(멱등) 가드 =====
         # 이미 산출물이 있으면 해당 step은 다시 실행하지 않고 다음 step을 enqueue
@@ -310,18 +467,11 @@ def _execute_pipeline_step(
 # ========================================
 
 def _run_extract_ocr_step(session_id, channel_id, options, storage, session_repo, session_input_repo):
-    """
-    ✅ Extract Phase 1: OCR 수행
-    - 입력 파일 다운로드
-    - extract_texts_node() 실행 (OCR 포함)
-    - OCR 결과만 Blob에 저장
-    """
     import tempfile
     from app.utils.session_helpers import session_exists
     
     logger.info(f"[ExtractOCR] Starting for session={session_id}")
     
-    # 세션 삭제 체크
     if not session_exists(session_repo, session_id):
         logger.info(f"[ExtractOCR] Session {session_id} deleted - skipping")
         return
@@ -329,11 +479,11 @@ def _run_extract_ocr_step(session_id, channel_id, options, storage, session_repo
     session = session_repo.get_session(session_id)
     storage_prefix = session.get("storage_prefix", "")
     
+    # ✅ Root run ID 조회
+    root_run_id = _get_root_run_id(storage, storage_prefix)
+    
     # 진행 상황 업데이트
-    session_repo.update_session_fields(
-        session_id,
-        current_step="extract_texts",
-    )
+    session_repo.update_session_fields(session_id, current_step="extract_texts")
     
     # 입력 파일 다운로드
     inputs = session_input_repo.list_inputs(session_id)
@@ -366,19 +516,18 @@ def _run_extract_ocr_step(session_id, channel_id, options, storage, session_repo
             else:
                 aux_sources.append(source_path)
         
-        # 체크포인트 콜백 함수 정의
+        # 체크포인트 콜백
         def checkpoint_callback(key: str, data: dict):
-            """중간 저장 콜백 - Blob Storage에 체크포인트 저장"""
             try:
                 storage.upload_json(key, data)
                 logger.info(f"[ExtractOCR] 💾 Checkpoint saved: {key}")
             except Exception as e:
                 logger.warning(f"[ExtractOCR] ⚠️ Checkpoint save failed: {e}")
 
-        # LangGraph 노드 직접 호출 (OCR 수행)
+        # ✅ State 준비
         from app.langgraph_pipeline.podcast.graph import extract_texts_node
         
-        state = {
+        state_input = {
             "main_sources": main_sources,
             "aux_sources": aux_sources,
             "source_data": {},
@@ -392,9 +541,18 @@ def _run_extract_ocr_step(session_id, channel_id, options, storage, session_repo
             "checkpoint_callback": checkpoint_callback,
         }
         
-        # ✅ OCR 수행
-        state = extract_texts_node(state)
+        # ✅ Parent run으로 연결하여 node 실행
+        if root_run_id:
+            state = _trace_with_parent(
+                name="extract_texts",
+                parent_run_id=root_run_id,
+                func=lambda s: extract_texts_node(s),
+                state_input=state_input,
+            )
+        else:
+            state = extract_texts_node(state_input)
         
+        # 세션 삭제 체크
         if not session_exists(session_repo, session_id):
             logger.info(f"[ExtractOCR] Session {session_id} deleted during execution")
             return
@@ -402,38 +560,28 @@ def _run_extract_ocr_step(session_id, channel_id, options, storage, session_repo
         if state.get("errors"):
             raise Exception(f"Extract OCR failed: {state['errors']}")
         
-        # ✅ OCR 결과 저장 (combine 전)
+        # OCR 결과 저장
         ocr_results_key = f"{storage_prefix}pipeline/ocr_results.json"
-        
         ocr_data = {
             "source_data": state["source_data"],
             "main_texts": state["main_texts"],
             "aux_texts": state["aux_texts"],
             "usage": state.get("usage", {}),
         }
-        
         storage.upload_json(ocr_results_key, ocr_data)
         
         # 진행 상황 업데이트
         progress_key = f"{storage_prefix}pipeline/progress.json"
-        progress_data = {
-            "completed_steps": ["extract_ocr"],
-            "current_step": "extract_finalize",
-            "intermediate_keys": {
-                "ocr_results": ocr_results_key,
-            }
-        }
+        progress_data = storage.download_json(progress_key)
+        progress_data["completed_steps"].append("extract_ocr")
+        progress_data["current_step"] = "extract_finalize"
+        progress_data["intermediate_keys"]["ocr_results"] = ocr_results_key
         storage.upload_json(progress_key, progress_data)
         
-        # DB 업데이트
-        session_repo.update_session_fields(
-            session_id,
-            current_step="extract_ocr_complete",
-        )
-        
+        session_repo.update_session_fields(session_id, current_step="extract_ocr_complete")
         logger.info(f"[ExtractOCR] ✅ Completed for session={session_id}")
         
-        # ✅ 다음 단계 큐잉 (extract_finalize)
+        # 다음 단계 큐잉
         from app.services.queue_service import enqueue_pipeline_step
         enqueue_pipeline_step(
             session_id=session_id,
@@ -443,7 +591,6 @@ def _run_extract_ocr_step(session_id, channel_id, options, storage, session_repo
         )
         
     finally:
-        # 임시 파일 정리
         for temp_file in temp_files:
             try:
                 if os.path.exists(temp_file):
@@ -470,16 +617,18 @@ def _run_extract_finalize_step(session_id, channel_id, options, storage, session
     session = session_repo.get_session(session_id)
     storage_prefix = session.get("storage_prefix", "")
     
+    # ✅ Root run ID 조회
+    root_run_id = _get_root_run_id(storage, storage_prefix)
+    
     session_repo.update_session_fields(session_id, current_step="combine_texts")
     
-    # ✅ 이전 단계 결과 로드
+    # 이전 단계 결과 로드
     ocr_results_key = f"{storage_prefix}pipeline/ocr_results.json"
     ocr_data = storage.download_json(ocr_results_key)
     
-    # LangGraph 노드 직접 호출
     from app.langgraph_pipeline.podcast.graph import combine_texts_node
     
-    state = {
+    state_input = {
         "source_data": ocr_data["source_data"],
         "main_texts": ocr_data["main_texts"],
         "aux_texts": ocr_data["aux_texts"],
@@ -488,14 +637,14 @@ def _run_extract_finalize_step(session_id, channel_id, options, storage, session
         "usage": ocr_data.get("usage", {}),
     }
     
-    # ✅ 텍스트 병합 (빠른 작업)
-    state = combine_texts_node(state)
+    # ✅ Node 실행 + trace
+    state = _trace_with_parent("combine_texts", root_run_id, combine_texts_node, state_input)
     
     if not session_exists(session_repo, session_id):
         logger.info(f"[ExtractFinalize] Session {session_id} deleted during execution")
         return
     
-    # ✅ 최종 결과 저장
+    # 최종 결과 저장
     extracted_key = f"{storage_prefix}pipeline/extracted_data.json"
     
     extracted_data = {
@@ -516,7 +665,6 @@ def _run_extract_finalize_step(session_id, channel_id, options, storage, session
     progress_data["intermediate_keys"]["extracted_data"] = extracted_key
     storage.upload_json(progress_key, progress_data)
     
-    # DB 업데이트
     session_repo.update_session_fields(
         session_id,
         current_step="extract_complete",
@@ -524,7 +672,7 @@ def _run_extract_finalize_step(session_id, channel_id, options, storage, session
     
     logger.info(f"[ExtractFinalize] ✅ Completed for session={session_id}")
     
-    # ✅ 다음 단계 큐잉 (script)
+    # 다음 단계 큐잉
     from app.services.queue_service import enqueue_pipeline_step
     enqueue_pipeline_step(
         session_id=session_id,
@@ -547,21 +695,23 @@ def _run_script_step(session_id, channel_id, options, storage, session_repo):
     session = session_repo.get_session(session_id)
     storage_prefix = session.get("storage_prefix", "")
     
+    # ✅ Root run ID 조회
+    root_run_id = _get_root_run_id(storage, storage_prefix)
+    
     session_repo.update_session_fields(session_id, current_step="generate_script")
     
     # 이전 단계 결과 로드
     extracted_key = f"{storage_prefix}pipeline/extracted_data.json"
     extracted_data = storage.download_json(extracted_key)
     
-    # LangGraph 노드 직접 호출
     from app.langgraph_pipeline.podcast.graph import generate_script_node
     
-    # ✅ Vertex AI 설정
+    # Vertex AI 설정
     project_id = os.getenv("VERTEX_AI_PROJECT_ID")
     region = os.getenv("VERTEX_AI_REGION")
     sa_file = os.getenv("VERTEX_AI_SERVICE_ACCOUNT_FILE")
     
-    state = {
+    state_input = {
         "combined_text": extracted_data["combined_text"],
         "source_data": extracted_data["source_data"],
         "project_id": project_id,
@@ -577,7 +727,8 @@ def _run_script_step(session_id, channel_id, options, storage, session_repo):
         "errors": [],
     }
     
-    state = generate_script_node(state)
+    # ✅ Node 실행 + trace
+    state = _trace_with_parent("generate_script", root_run_id, generate_script_node, state_input)
     
     if not session_exists(session_repo, session_id):
         logger.info(f"[Script] Session {session_id} deleted during execution")
@@ -634,16 +785,18 @@ def _run_audio_step(session_id, channel_id, options, storage, session_repo):
     session = session_repo.get_session(session_id)
     storage_prefix = session.get("storage_prefix", "")
     
+    # ✅ Root run ID 조회
+    root_run_id = _get_root_run_id(storage, storage_prefix)
+    
     session_repo.update_session_fields(session_id, current_step="generate_audio")
     
     # 이전 단계 결과 로드
     script_key = f"{storage_prefix}pipeline/script.json"
     script_data = storage.download_json(script_key)
     
-    # LangGraph 노드 직접 호출
     from app.langgraph_pipeline.podcast.graph import generate_audio_node
     
-    state = {
+    state_input = {
         "script": script_data["script"],
         "host_name": options.get("host1", "Fenrir"),
         "guest_name": options.get("host2", ""),
@@ -651,7 +804,8 @@ def _run_audio_step(session_id, channel_id, options, storage, session_repo):
         "errors": [],
     }
     
-    state = generate_audio_node(state)
+    # ✅ Node 실행 + trace
+    state = _trace_with_parent("generate_audio", root_run_id, generate_audio_node, state_input)
     
     if not session_exists(session_repo, session_id):
         logger.info(f"[Audio] Session {session_id} deleted during execution")
@@ -724,6 +878,9 @@ def _run_finalize_step(session_id, channel_id, options, storage, session_repo):
     session = session_repo.get_session(session_id)
     storage_prefix = session.get("storage_prefix", "")
     
+    # ✅ Root run ID 조회
+    root_run_id = _get_root_run_id(storage, storage_prefix)
+    
     session_repo.update_session_fields(session_id, current_step="merge_audio")
     
     # 이전 단계 결과 로드
@@ -747,10 +904,10 @@ def _run_finalize_step(session_id, channel_id, options, storage, session_repo):
             
             temp_wav_files.append(temp_path)
         
-        # LangGraph 노드 직접 호출
         from app.langgraph_pipeline.podcast.graph import merge_audio_node, generate_transcript_node
         
-        state = {
+        # ✅ Merge node
+        merge_input = {
             "wav_files": temp_wav_files,
             "audio_metadata": audio_data["audio_metadata"],
             "script": script_data["script"],
@@ -759,8 +916,7 @@ def _run_finalize_step(session_id, channel_id, options, storage, session_repo):
             "errors": [],
         }
         
-        # 병합
-        state = merge_audio_node(state)
+        state = _trace_with_parent("merge_audio", root_run_id, merge_audio_node, merge_input)
         
         if not session_exists(session_repo, session_id):
             logger.info(f"[Finalize] Session {session_id} deleted during merge")
@@ -771,8 +927,8 @@ def _run_finalize_step(session_id, channel_id, options, storage, session_repo):
         
         session_repo.update_session_fields(session_id, current_step="merge_complete")
         
-        # 트랜스크립트 생성
-        state = generate_transcript_node(state)
+        # ✅ Transcript node
+        state = _trace_with_parent("generate_transcript", root_run_id, generate_transcript_node, state)
         
         if not session_exists(session_repo, session_id):
             logger.info(f"[Finalize] Session {session_id} deleted during transcript")
@@ -808,7 +964,6 @@ def _run_finalize_step(session_id, channel_id, options, storage, session_repo):
         # 최종 업데이트
         if not session_exists(session_repo, session_id):
             logger.info(f"[Finalize] Session {session_id} deleted before final update")
-            # 업로드한 파일 삭제
             try:
                 storage.delete(audio_key)
                 storage.delete(script_out_key)
@@ -827,6 +982,31 @@ def _run_finalize_step(session_id, channel_id, options, storage, session_repo):
         )
         
         logger.info(f"[Finalize] ✅ Completed for session={session_id}")
+        
+        # ✅ Root run 종료
+        logger.info(f"🔍 Root run ID for closing: {root_run_id}")
+        if root_run_id:
+            try:
+                from langsmith import Client
+                from datetime import datetime
+                
+                logger.info(f"✅ Attempting to close root run: {root_run_id}")
+                ls_client = Client()
+                ls_client.update_run(
+                    root_run_id,
+                    end_time=datetime.now(),
+                    outputs={
+                        "audio_key": audio_key,
+                        "script_key": script_out_key,
+                        "total_duration_sec": total_duration_sec,
+                        "status": "completed",
+                    }
+                )
+                logger.info(f"✅ LangSmith root run closed successfully: {root_run_id}")
+            except Exception as e:
+                logger.error(f"❌ Root run 종료 실패: {e}", exc_info=True)
+        else:
+            logger.warning("⚠️ No root_run_id found - cannot close root run")
         
         # 임시 파일 정리
         try:
