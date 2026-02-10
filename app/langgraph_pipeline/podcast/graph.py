@@ -330,7 +330,12 @@ def generate_transcript_node(state: PodcastState) -> PodcastState:
                 
                 print(f"👁️  Vision (이미지 처리)")
                 print(f"   키워드 추출: {keyword_tokens:,} tokens (${keyword_tokens * pricing['vision']:.4f})")
-                print(f"   이미지 분석:  {image_tokens:,} tokens (${image_tokens * pricing['vision']:.4f})")
+                # ✅ 이미지 개수 표시
+                images_analyzed = vision_usage.get("images_analyzed", 0)
+                if images_analyzed > 0:
+                    print(f"   이미지 분석:  {image_tokens:,} tokens ({images_analyzed}개 이미지) (${image_tokens * pricing['vision']:.4f})")
+                else:
+                    print(f"   이미지 분석:  {image_tokens:,} tokens (${image_tokens * pricing['vision']:.4f})")
                 # ✅ 이미지 설명 생성 토큰 출력
                 if description_tokens > 0:
                     description_count = vision_usage.get("description_count", 0)
