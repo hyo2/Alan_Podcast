@@ -1,12 +1,27 @@
 """Azure Functions entry point (Python programming model v2)"""
 
-import os
-import json
+import os, json, tempfile, pathlib
 import logging
 import base64
 import azure.functions as func
 
 logger = logging.getLogger(__name__)
+
+def _ensure_vertex_sa_file():
+    target = os.getenv("VERTEX_AI_SERVICE_ACCOUNT_FILE", "/tmp/gcp-sa.json")
+    if pathlib.Path(target).exists():
+        return
+
+    sa = os.getenv("VERTEX_AI_SERVICE_ACCOUNT_JSON")
+    if not sa:
+        raise RuntimeError("Missing VERTEX_AI_SERVICE_ACCOUNT_JSON")
+
+    data = json.loads(sa)
+    pathlib.Path(target).parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+_ensure_vertex_sa_file()
 
 # --- LangSmith manual tracing (safe fallback) ---
 try:
