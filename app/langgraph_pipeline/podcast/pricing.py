@@ -70,6 +70,29 @@ def calculate_vision_cost(tokens: int) -> float:
     return tokens * get_pricing()["vision"]
 
 
+def calculate_text_cost(tokens: int, input_ratio: float = 0.5) -> float:
+    """
+    Text API 비용 계산 (LLM 사용, input/output 비율 가정)
+    
+    키워드 추출 같은 텍스트 작업은 input/output 비율을 정확히 추적하기 어려우므로
+    총 토큰 수와 비율 가정으로 계산
+    
+    Args:
+        tokens: 총 토큰 수
+        input_ratio: input 토큰 비율 (기본: 0.5 = 50%)
+    
+    Returns:
+        float: 비용 (USD)
+    
+    Example:
+        >>> calculate_text_cost(2000)  # 2000 tokens, 50% input/output
+        >>> calculate_text_cost(2000, 0.7)  # 70% input, 30% output
+    """
+    input_tokens = int(tokens * input_ratio)
+    output_tokens = tokens - input_tokens
+    return calculate_llm_cost(input_tokens, output_tokens)
+
+
 def calculate_tts_cost(characters: int) -> float:
     """
     TTS 비용 계산
