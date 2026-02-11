@@ -995,11 +995,14 @@ class ImprovedHybridFilterPipeline:
             if hasattr(response, 'usage_metadata'):
                 usage = response.usage_metadata
                 token_count = usage.total_token_count
-                _log(f"   💰 [Vision-키워드] Total tokens: {token_count:,}", level="INFO")
+                _log(f"   💰 [Text-키워드] Total tokens: {token_count:,}", level="INFO")
                 
-                # ✅ vision_tokens에 저장
-                self.vision_tokens["keyword_extraction"] = token_count
-                self.vision_tokens["total"] += token_count
+                # ✅ text_tokens에 저장 (Text API 사용)
+                if not hasattr(self, 'text_tokens'):
+                    self.text_tokens = {'total': 0}
+                
+                self.text_tokens["keyword_extraction"] = token_count
+                self.text_tokens["total"] += token_count
             
             text = response.text.strip()
             
