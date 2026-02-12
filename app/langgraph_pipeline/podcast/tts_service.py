@@ -458,18 +458,22 @@ class TTSService:
                     actual_last_char = last_text[i]
                     break
             
-            # 마지막 발화가 너무 짧거나 불완전한 경우
+            # 마지막 발화가 불완전한 경우 (두 조건 모두 충족해야 제거)
             is_incomplete = False
             
-            # 1. 50자 미만
-            if len(last_text) < 50:
-                is_incomplete = True
-                logger.warning(f"⚠️  마지막 발화가 너무 짧음: {len(last_text)}자")
+            terminal_chars = '.!?。！？…'
+            ends_with_punctuation = actual_last_char in terminal_chars if actual_last_char else False
             
-            # 2. 문장 부호로 끝나지 않음 (따옴표 무시)
-            elif actual_last_char and actual_last_char not in '.!?。！？…':
+            # 문장 부호 없이 끝남 → 불완전
+            if actual_last_char and not ends_with_punctuation:
                 is_incomplete = True
                 logger.warning(f"⚠️  마지막 발화가 문장 부호로 끝나지 않음: '{last_text[-30:]}' (실제: '{actual_last_char}')")
+            
+            # 50자 미만 AND 문장 부호로도 끝나지 않음 → 불완전
+            # ✅ "감사합니다!", "좋았어요!" 처럼 짧아도 완결된 발화는 유지
+            elif len(last_text) < 50 and not ends_with_punctuation:
+                is_incomplete = True
+                logger.warning(f"⚠️  마지막 발화가 너무 짧고 문장 부호 없음: {len(last_text)}자")
             
             if is_incomplete:
                 logger.warning(f"⚠️  불완전 발화 제거: {last_text[:50]}...")

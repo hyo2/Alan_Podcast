@@ -716,9 +716,7 @@ class ScriptGenerator:
                 logger.warning(f"[끊김 감지] {incomplete_reason} → 이어쓰기")
                 
                 # ✅ 이어쓰기 실행 + 토큰 추적
-                # postprocess.py가 수정되기 전까지는 토큰 추적 불가
-                # TODO: continue_script_fallback이 usage 반환하도록 수정 필요
-                script_text = continue_script_fallback(
+                script_text, continue_usage = continue_script_fallback(
                     script_text=script_text,
                     budget=budget,
                     model=model,
@@ -727,18 +725,14 @@ class ScriptGenerator:
                     speaker_b_label=speaker_b_label,
                 )
                 
-                # ⚠️ 임시: 토큰 사용량 추정 (실제 추적 불가)
-                estimated_continue_tokens = {
-                    "input": int(current_len * 0.4),  # 기존 스크립트 + 프롬프트
-                    "output": int((budget - current_len) * 0.4),  # 추가 생성
-                }
-                postprocess_input_tokens += estimated_continue_tokens["input"]
-                postprocess_output_tokens += estimated_continue_tokens["output"]
+                # ✅ 실제 토큰 사용량 반영
+                postprocess_input_tokens += continue_usage.get("input_tokens", 0)
+                postprocess_output_tokens += continue_usage.get("output_tokens", 0)
                 
-                logger.warning(
-                    f"⚠️ 이어쓰기 토큰 추정: "
-                    f"Input ~{estimated_continue_tokens['input']:,}, "
-                    f"Output ~{estimated_continue_tokens['output']:,}"
+                logger.info(
+                    f"[이어쓰기 토큰] "
+                    f"Input: {continue_usage.get('input_tokens', 0):,}, "
+                    f"Output: {continue_usage.get('output_tokens', 0):,}"
                 )
                 
                 script_text = clean_script(script_text)
@@ -751,8 +745,7 @@ class ScriptGenerator:
                 logger.error(f"[tolerance 초과] {current_len}자 ({ratio:.1%}) > {max_chars}자 ({max_ratio:.1%}) → 하드캡")
                 
                 # ✅ 하드캡 실행 + 토큰 추적
-                # TODO: hard_cap_fallback이 usage 반환하도록 수정 필요
-                script_text = hard_cap_fallback(
+                script_text, hardcap_usage = hard_cap_fallback(
                     script_text=script_text,
                     budget=max_chars,
                     model=model,
@@ -761,18 +754,14 @@ class ScriptGenerator:
                     speaker_b_label=speaker_b_label,
                 )
                 
-                # ⚠️ 임시: 토큰 사용량 추정
-                estimated_hardcap_tokens = {
-                    "input": int(current_len * 0.4),  # 긴 스크립트 + 압축 프롬프트
-                    "output": int(max_chars * 0.4),  # 압축된 결과
-                }
-                postprocess_input_tokens += estimated_hardcap_tokens["input"]
-                postprocess_output_tokens += estimated_hardcap_tokens["output"]
+                # ✅ 실제 토큰 사용량 반영
+                postprocess_input_tokens += hardcap_usage.get("input_tokens", 0)
+                postprocess_output_tokens += hardcap_usage.get("output_tokens", 0)
                 
-                logger.warning(
-                    f"⚠️ 하드캡 토큰 추정: "
-                    f"Input ~{estimated_hardcap_tokens['input']:,}, "
-                    f"Output ~{estimated_hardcap_tokens['output']:,}"
+                logger.info(
+                    f"[하드캡 토큰] "
+                    f"Input: {hardcap_usage.get('input_tokens', 0):,}, "
+                    f"Output: {hardcap_usage.get('output_tokens', 0):,}"
                 )
                 
                 script_text = clean_script(script_text)
@@ -788,8 +777,8 @@ class ScriptGenerator:
             if postprocess_input_tokens > 0 or postprocess_output_tokens > 0:
                 logger.info("=" * 80)
                 logger.info("📊 후처리 토큰 집계")
-                logger.info(f"   이어쓰기/하드캡 Input:  {postprocess_input_tokens:,} tokens (추정)")
-                logger.info(f"   이어쓰기/하드캡 Output: {postprocess_output_tokens:,} tokens (추정)")
+                logger.info(f"   이어쓰기/하드캡 Input:  {postprocess_input_tokens:,} tokens")
+                logger.info(f"   이어쓰기/하드캡 Output: {postprocess_output_tokens:,} tokens")
                 logger.info("=" * 80)
                 
                 # usage_with_cost 업데이트

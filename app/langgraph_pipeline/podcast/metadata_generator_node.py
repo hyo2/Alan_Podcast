@@ -643,12 +643,6 @@ class MetadataGenerator:
                 vision_tokens = self.image_filter.vision_tokens.copy()
                 _log(f"   image_filter.vision_tokens = {vision_tokens}", level="DEBUG")
             
-            # ✅ Text 토큰 통계 수집 (키워드 추출)
-            text_tokens = {}
-            if hasattr(self.image_filter, 'text_tokens'):
-                text_tokens = self.image_filter.text_tokens.copy()
-                _log(f"   image_filter.text_tokens = {text_tokens}", level="DEBUG")
-            
             # ✅ 이미지 설명 생성 토큰 추가
             _log(f"   image_describer.total_tokens = {self.image_describer.total_tokens}", level="DEBUG")
             _log(f"   image_describer.description_count = {self.image_describer.description_count}", level="DEBUG")
@@ -664,11 +658,6 @@ class MetadataGenerator:
                 from .pricing import calculate_vision_cost, format_cost
                 vision_cost = calculate_vision_cost(vision_tokens['total'])
                 vision_tokens['cost_usd'] = vision_cost
-            
-            if text_tokens.get('total', 0) > 0:
-                from .pricing import calculate_text_cost, format_cost
-                text_cost = calculate_text_cost(text_tokens['total'])
-                text_tokens['cost_usd'] = text_cost
             
             metadata = {
                 "metadata_version": "1.0",
@@ -693,19 +682,11 @@ class MetadataGenerator:
                 total_supp_pages = sum(s['total_pages'] for s in supplementary_metadata)
                 _log(f"📚 보조자료 페이지: {total_supp_pages}개", level="INFO")
             
-            # ✅ Text 토큰 통계 출력
-            if text_tokens:
-                _log(f"\n💰 Text API 사용 통계:", level="INFO")
-                if 'keyword_extraction' in text_tokens:
-                    _log(f"   📝 키워드 추출: {text_tokens['keyword_extraction']:,} tokens", level="INFO")
-                if 'total' in text_tokens:
-                    _log(f"   📊 Total: {text_tokens['total']:,} tokens", level="INFO")
-                if 'cost_usd' in text_tokens:
-                    _log(f"   💵 비용: {format_cost(text_tokens['cost_usd'])}", level="INFO")
-            
             # ✅ Vision 토큰 통계 출력
             if vision_tokens:
                 _log(f"\n💰 Vision API 사용 통계:", level="INFO")
+                if 'keyword_extraction' in vision_tokens:
+                    _log(f"   📝 키워드 추출: {vision_tokens['keyword_extraction']:,} tokens", level="INFO")
                 if 'image_filtering' in vision_tokens:
                     _log(f"   🔍 이미지 필터링: {vision_tokens['image_filtering']:,} tokens", level="INFO")
                 if 'image_description' in vision_tokens:
@@ -717,10 +698,9 @@ class MetadataGenerator:
             
             print(f"{'='*120}\n")
             
-            # ✅ text_tokens와 vision_tokens 함께 반환
+            # ✅ vision_tokens와 함께 반환
             return {
                 "metadata_path": str(output_path),
-                "text_tokens": text_tokens,
                 "vision_tokens": vision_tokens
             }
     
@@ -777,7 +757,7 @@ class MetadataGenerator:
             # 이미지는 PPTX 원본에서 추출
             _log(f"   🖼️  이미지 처리 중...", level="INFO")
             _log(f"      → PPTX 원본에서 직접 추출", level="INFO")
-            self.image_filter.extract_keywords_from_document(file_path_str)
+            self.image_filter.extract_keywords_from_document(file_path_str, text=full_text)
             keywords = self.image_filter.document_keywords
             all_images = self._extract_images_from_pptx(file_path_str)
             
@@ -805,7 +785,7 @@ class MetadataGenerator:
             
             elif original_file_type in ['docx', 'pdf']:
                 _log(f"      → PDF에서 이미지 추출", level="INFO")
-                self.image_filter.extract_keywords_from_document(processed_path)
+                self.image_filter.extract_keywords_from_document(processed_path, text=full_text)
                 keywords = self.image_filter.document_keywords
                 extractor = UniversalImageExtractor()
                 
