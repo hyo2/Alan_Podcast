@@ -2,7 +2,6 @@
 import os, logging, sys
 from pathlib import Path
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi import Request, HTTPException
 
@@ -17,6 +16,11 @@ from middleware.cors import setup_cors
 from app.routers import (
     channels, sessions, health, streaming
 )
+
+import sys
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
 
 def init_logging() -> None:
     # env별로 LOG_LEVEL 변경
@@ -147,33 +151,3 @@ app.include_router(health.router, prefix="/api")
 app.include_router(channels.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
 app.include_router(streaming.router, prefix="/api")
-
-# ========================================
-# Frontend (mobile only)
-# ========================================
-APP_DIR = Path(__file__).resolve().parent
-STATIC_DIR = APP_DIR / "static"
-FAVICON_PATH = STATIC_DIR / "alan_favicon.svg"
-
-app.mount(
-    "/assets",
-    StaticFiles(directory=str(STATIC_DIR / "assets")),
-    name="assets"
-)
-
-
-@app.get("/alan_favicon.svg")
-def favicon():
-    if not FAVICON_PATH.is_file():
-        raise HTTPException(status_code=404, detail=f"favicon not found: {FAVICON_PATH}")
-    return FileResponse(FAVICON_PATH, media_type="image/svg+xml")
-
-
-@app.get("/mobile")
-def serve_mobile():
-    return FileResponse("app/static/index.html")
-
-
-@app.get("/mobile/{path:path}")
-def serve_mobile_spa(path: str):
-    return FileResponse("app/static/index.html")
