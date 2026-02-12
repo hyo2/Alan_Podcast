@@ -18,7 +18,7 @@ Tail Focus V5 - 글자 수 + 문장 개수 동시 제한 최종 버전 (중복 �
 """
 
 import os
-from venv import logger
+import logging
 import wave
 import json
 import requests
@@ -37,7 +37,18 @@ from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 from google.cloud import speech
 
+# ✅ 비용 계산 유틸리티
+try:
+    from app.langgraph_pipeline.podcast.pricing import calculate_tts_cost, calculate_stt_cost, format_cost
+except ImportError:
+    # 독립 실행 시에는 비용 계산 스킵
+    def calculate_tts_cost(chars): return 0.0
+    def calculate_stt_cost(secs): return 0.0
+    def format_cost(usd, include_krw=True): return f"${usd:.4f}"
+
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class Dialogue:
@@ -211,7 +222,7 @@ class TailFocusV5Generator:
     
     def _merge_wav_files(self, wav_files: List[str], output_path: str):
         """여러 WAV 파일을 하나로 병합"""
-        print(f"  🔗 {len(wav_files)}개 배치 WAV 병합 중...")
+        logger.info(f"  🔗 {len(wav_files)}개 배치 WAV 병합 중...")
         
         # 첫 번째 파일에서 파라미터 가져오기
         with wave.open(wav_files[0], 'rb') as w:
@@ -233,7 +244,7 @@ class TailFocusV5Generator:
             if os.path.exists(wav_file):
                 os.remove(wav_file)
         
-        print(f"  ✅ 배치 병합 완료")
+        logger.info(f"  ✅ 배치 병합 완료")
     
     def _generate_single_batch(
         self, 
@@ -289,14 +300,14 @@ class TailFocusV5Generator:
                     self.error_429_count += 1
                     self.retry_count += 1
                     delay = self._get_retry_delay(attempt)
-                    print(f"      ⚠️  429 에러 → {delay:.1f}초 후 재시도 ({attempt+1}회)")
+                    logger.warning(f"      ⚠️  429 에러 → {delay:.1f}초 후 재시도 ({attempt+1}회)")
                     time.sleep(delay)
                     attempt += 1
                 else:
                     raise Exception(f"TTS Error: {res.status_code} - {res.text}")
                     
             except Exception as e:
-                print(f"      ❌ 예외 발생: {e}")
+                logger.error(f"      ❌ 예외 발생: {e}")
                 self.retry_count += 1
                 delay = self._get_retry_delay(attempt)
                 time.sleep(delay)
@@ -314,24 +325,24 @@ class TailFocusV5Generator:
         total_chars = sum(len(t) for t in texts)
         avg_chars = total_chars / total_texts if total_texts > 0 else 0
         
-        print(f"  🔊 TTS 생성 중...")
-        print(f"     문장 수: {total_texts}개")
-        print(f"     총 글자수: {total_chars}자 (평균: {avg_chars:.0f}자/문장)")
+        logger.info(f"  🔊 TTS 생성 중...")
+        logger.info(f"     문장 수: {total_texts}개")
+        logger.info(f"     총 글자수: {total_chars}자 (평균: {avg_chars:.0f}자/문장)")
         
         # ✅ 배치 분할 (글자 수 + 문장 개수 동시 체크!)
         batches = self._split_into_batches(texts)
         
         if len(batches) == 1:
             # 단일 배치
-            print(f"     전략: 단일 배치 ({len(batches[0])}개, {sum(len(t) for t in batches[0])}자)")
+            logger.info(f"     전략: 단일 배치 ({len(batches[0])}개, {sum(len(t) for t in batches[0])}자)")
             self._generate_single_batch(batches[0], voice, output_path)
-            print(f"  ✅ TTS 완료")
+            logger.info(f"  ✅ TTS 완료")
         else:
             # 배치 분할
-            print(f"     전략: {len(batches)}개 배치로 분할")
+            logger.info(f"     전략: {len(batches)}개 배치로 분할")
             for i, batch in enumerate(batches):
                 batch_chars = sum(len(t) for t in batch)
-                print(f"       배치 {i+1}: {len(batch)}개 문장, {batch_chars}자")
+                logger.info(f"       배치 {i+1}: {len(batch)}개 문장, {batch_chars}자")
             
             temp_wavs = []
             for batch_idx, batch_texts in enumerate(batches):
@@ -339,7 +350,7 @@ class TailFocusV5Generator:
                 temp_wav = str(self.output_path / f"temp_batch_{batch_idx}_{self.session_id}_{voice}.wav")
                 
                 batch_chars = sum(len(t) for t in batch_texts)
-                print(f"     배치 {batch_idx+1}/{len(batches)}: {len(batch_texts)}개 문장, {batch_chars}자 생성 중...")
+                logger.info(f"     배치 {batch_idx+1}/{len(batches)}: {len(batch_texts)}개 문장, {batch_chars}자 생성 중...")
                 
                 self._generate_single_batch(batch_texts, voice, temp_wav)
                 temp_wavs.append(temp_wav)
@@ -350,7 +361,7 @@ class TailFocusV5Generator:
             
             # 배치 병합
             self._merge_wav_files(temp_wavs, output_path)
-            print(f"  ✅ TTS 완료 ({len(batches)}개 배치)")
+            logger.info(f"  ✅ TTS 완료 ({len(batches)}개 배치)")
     
     def _transcribe_audio(self, wav_path: str) -> List[Dict]:
         """STT 변환"""
@@ -361,7 +372,7 @@ class TailFocusV5Generator:
         chunk_len = 50 * rate * 2
         all_words = []
         
-        print(f"  🎧 STT 변환 중... ({os.path.basename(wav_path)})")
+        logger.info(f"  🎧 STT 변환 중... ({os.path.basename(wav_path)})")
         
         for i, start_byte in enumerate(range(0, len(content), chunk_len)):
             chunk = content[start_byte:start_byte + chunk_len]
@@ -389,9 +400,9 @@ class TailFocusV5Generator:
                             "end": round(w.end_time.total_seconds() + time_offset, 3)
                         })
             except Exception as e:
-                print(f"    ⚠️  STT 청크 {i} 실패: {e}")
+                logger.error(f"    ⚠️  STT 청크 {i} 실패: {e}")
         
-        print(f"  ✅ STT 완료 ({len(all_words)}개 단어)")
+        logger.info(f"  ✅ STT 완료 ({len(all_words)}개 단어)")
         return all_words
     
     # =========================================================================
@@ -543,12 +554,12 @@ class TailFocusV5Generator:
         texts: List[str]
     ) -> List[Dict]:
         """강화된 문장 분할 (세그먼트 개수 보장!)"""
-        print(f"\n  🧩 강화된 문장 분할 (후보군 방식)...")
+        logger.info(f"\n  🧩 강화된 문장 분할 (후보군 방식)...")
         
         with wave.open(wav_path, 'rb') as w:
             total_duration = w.getnframes() / w.getframerate()
         
-        print(f"     오디오 총 길이: {total_duration:.1f}초")
+        logger.info(f"     오디오 총 길이: {total_duration:.1f}초")
         
         segments = []
         stt_search_idx = 0
@@ -587,31 +598,50 @@ class TailFocusV5Generator:
         
         # ✅ 세그먼트 개수 검증 및 보장!
         if len(segments) != len(texts):
-            print(f"  ⚠️  세그먼트 개수 불일치 감지!")
-            print(f"     텍스트: {len(texts)}개, 세그먼트: {len(segments)}개")
+            logger.warning(f"  ⚠️  세그먼트 개수 불일치 감지!")
+            logger.info(f"     텍스트: {len(texts)}개, 세그먼트: {len(segments)}개")
             
             # 부족하면 추가
+            MIN_DURATION = 0.5  # 최소 0.5초 보장
+            
             while len(segments) < len(texts):
                 last_end = segments[-1]['end'] if segments else 0.0
+                
+                # ✅ 오디오 끝에 도달했는지 체크
+                if last_end >= total_duration - 0.01:  # 0.01초 여유
+                    logger.warning(f"     ⚠️  오디오 끝 도달, 더 이상 세그먼트 추가 불가")
+                    logger.warning(f"        텍스트 {len(texts)}개 중 {len(segments)}개만 매칭됨")
+                    logger.warning(f"        → 스크립트 길이에 비해 TTS 오디오가 짧습니다")
+                    break
+                
                 # 평균 duration 계산
                 if segments:
                     avg_dur = sum([s['end'] - s['start'] for s in segments]) / len(segments)
                 else:
                     avg_dur = 5.0
                 
+                # ✅ 최소 duration 보장
+                new_end = min(last_end + avg_dur, total_duration)
+                actual_duration = new_end - last_end
+                
+                if actual_duration < MIN_DURATION:
+                    logger.warning(f"     ⚠️  세그먼트 추가 불가 (남은 시간 부족: {actual_duration:.2f}초 < {MIN_DURATION}초)")
+                    logger.warning(f"        텍스트 {len(texts)}개 중 {len(segments)}개만 매칭됨")
+                    break
+                
                 new_seg = {
                     'start': last_end,
-                    'end': min(last_end + avg_dur, total_duration)
+                    'end': new_end
                 }
                 segments.append(new_seg)
-                print(f"     세그먼트 추가: {len(segments)}번째 ({new_seg['start']:.1f}초~{new_seg['end']:.1f}초)")
+                logger.info(f"     세그먼트 추가: {len(segments)}번째 ({new_seg['start']:.1f}초~{new_seg['end']:.1f}초, duration={actual_duration:.2f}초)")
             
             # 너무 많으면 제거
             while len(segments) > len(texts):
                 removed = segments.pop()
-                print(f"     세그먼트 제거: {len(segments)+1}번째")
+                logger.info(f"     세그먼트 제거: {len(segments)+1}번째")
         
-        print(f"  ✅ 최종 세그먼트: {len(segments)}개 (텍스트: {len(texts)}개)")
+        logger.info(f"  ✅ 최종 세그먼트: {len(segments)}개 (텍스트: {len(texts)}개)")
         
         # ============================================================
         # ✅ 세그먼트 검증 (비정상 duration 감지)
@@ -660,14 +690,14 @@ class TailFocusV5Generator:
         output_path: str
     ):
         """안전한 세그먼트 병합"""
-        print(f"\n  ✂️  대본 순서대로 조립 중...")
+        logger.info(f"\n  ✂️  대본 순서대로 조립 중...")
         
         with wave.open(host_wav, 'rb') as w:
             host_duration = w.getnframes() / w.getframerate()
         with wave.open(guest_wav, 'rb') as w:
             guest_duration = w.getnframes() / w.getframerate()
         
-        print(f"    Host 길이: {host_duration:.1f}초 / Guest 길이: {guest_duration:.1f}초")
+        logger.info(f"    Host 길이: {host_duration:.1f}초 / Guest 길이: {guest_duration:.1f}초")
         
         def extract_audio(path, start, end, max_duration):
             with wave.open(path, 'rb') as w:
@@ -692,7 +722,7 @@ class TailFocusV5Generator:
         final_audio = bytearray()
         params = None
         
-        print(f"    진행자: {len(host_queue)}개 / 게스트: {len(guest_queue)}개")
+        logger.info(f"    진행자: {len(host_queue)}개 / 게스트: {len(guest_queue)}개")
         
         for i, line in enumerate(dialogues):
             if line.speaker == "host":
@@ -710,7 +740,7 @@ class TailFocusV5Generator:
             f.setparams(params)
             f.writeframes(final_audio)
         
-        print(f"  ✅ 병합 완료: {output_path}")
+        logger.info(f"  ✅ 병합 완료: {output_path}")
     
     # =========================================================================
     # Main Pipeline
@@ -718,24 +748,24 @@ class TailFocusV5Generator:
     
     def generate(self, dialogues: List[Dialogue]):
         """메인 파이프라인"""
-        print("\n" + "="*60)
-        print("🚀 Tail Focus V5 Generator 시작")
-        print("   (글자 수 + 문장 개수 동시 제한)")
-        print(f"   Session ID: {self.session_id}")
-        print("="*60 + "\n")
+        logger.info("\n" + "="*60)
+        logger.info("🚀 Tail Focus V5 Generator 시작")
+        logger.info("   (글자 수 + 문장 개수 동시 제한)")
+        logger.info(f"   Session ID: {self.session_id}")
+        logger.info("="*60 + "\n")
         
         host_texts = [d.text for d in dialogues if d.speaker == "host"]
         guest_texts = [d.text for d in dialogues if d.speaker == "guest"]
         
-        print(f"📊 대화 분석:")
-        print(f"   진행자: {len(host_texts)}개")
-        print(f"   게스트: {len(guest_texts)}개")
-        print(f"   배치 제한: {self.MAX_BATCH_SIZE}개 또는 {self.MAX_BATCH_CHARS}자\n")
+        logger.info(f"📊 대화 분석:")
+        logger.info(f"   진행자: {len(host_texts)}개")
+        logger.info(f"   게스트: {len(guest_texts)}개")
+        logger.info(f"   배치 제한: {self.MAX_BATCH_SIZE}개 또는 {self.MAX_BATCH_CHARS}자\n")
         
         # Stage 1: TTS
-        print("="*60)
-        print("📍 Stage 1: 배치 TTS (글자 수 + 문장 개수 제한)")
-        print("="*60)
+        logger.info("="*60)
+        logger.info("📍 Stage 1: 배치 TTS (글자 수 + 문장 개수 제한)")
+        logger.info("="*60)
         
         tts_start = time.time()
         
@@ -750,12 +780,18 @@ class TailFocusV5Generator:
         else:
             guest_wav = None
         
+        
+        # ✅ TTS 문자 수 계산
+        host_chars = sum(len(text) for text in host_texts)
+        guest_chars = sum(len(text) for text in guest_texts) if guest_texts else 0
+        self.total_tts_chars = host_chars + guest_chars
+        
         self.tts_time = time.time() - tts_start
         
         # Stage 2: STT
-        print("\n" + "="*60)
-        print("📍 Stage 2: STT 변환")
-        print("="*60)
+        logger.info("\n" + "="*60)
+        logger.info("📍 Stage 2: STT 변환")
+        logger.info("="*60)
         
         stt_start = time.time()
         
@@ -769,9 +805,9 @@ class TailFocusV5Generator:
         self.stt_time = time.time() - stt_start
         
         # Stage 3: 분할
-        print("\n" + "="*60)
-        print("📍 Stage 3: 강화된 분할 (후보군 방식)")
-        print("="*60)
+        logger.info("\n" + "="*60)
+        logger.info("📍 Stage 3: 강화된 분할 (후보군 방식)")
+        logger.info("="*60)
         
         segment_start = time.time()
         
@@ -785,9 +821,9 @@ class TailFocusV5Generator:
         self.segment_time = time.time() - segment_start
         
         # Stage 4: 병합
-        print("\n" + "="*60)
-        print("📍 Stage 4: 안전한 병합")
-        print("="*60)
+        logger.info("\n" + "="*60)
+        logger.info("📍 Stage 4: 안전한 병합")
+        logger.info("="*60)
         
         merge_start = time.time()
         
@@ -810,10 +846,10 @@ class TailFocusV5Generator:
         
         self.merge_time = time.time() - merge_start
         
-        print("\n" + "="*60)
-        print("🎉 완료! 최종 WAV 파일:")
-        print(f"   📁 {final_wav}")
-        print("="*60 + "\n")
+        logger.info("\n" + "="*60)
+        logger.info("🎉 완료! 최종 WAV 파일:")
+        logger.info(f"   📁 {final_wav}")
+        logger.info("="*60 + "\n")
         
         print("📊 성능 측정:")
         print(f"   TTS: {self.tts_time:.2f}초")
@@ -822,6 +858,14 @@ class TailFocusV5Generator:
         print(f"   병합: {self.merge_time:.2f}초")
         print(f"   총: {self.tts_time + self.stt_time + self.segment_time + self.merge_time:.2f}초")
         print(f"   API 호출: {self.api_calls}번")
+        print(f"   💰 TTS 문자: {self.total_tts_chars:,}자")
+        
+        # ✅ 비용 계산
+        tts_cost = calculate_tts_cost(self.total_tts_chars)
+        stt_cost = calculate_stt_cost(self.stt_time)
+        print(f"   💵 TTS 비용: {format_cost(tts_cost)}")
+        print(f"   💵 STT 비용: {format_cost(stt_cost)}")
+        # STT 시간은 이미 위에 출력됨
         print(f"   429 에러: {self.error_429_count}번")
         print(f"   재시도: {self.retry_count}번")
         print("="*60 + "\n")

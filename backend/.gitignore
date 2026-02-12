@@ -141,6 +141,9 @@ venv.bak/
 .env.staging
 .env.production
 
+# 예시만 허용
+!.env.example
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -182,10 +185,20 @@ vertex-ai-service-account.json
 
 # local test folders
 test/
+ocr_debug_local/
 
 # Azure Functions local settings (secrets)
 local.settings.json
 **/local.settings.json
+app_settings.json
 
 # (선택) Azure Functions local storage emulator artifacts (가끔 생김)
 .azurefunctions/
+
+# ===================================
+# 로컬 환경 설정 파일 (무시)
+# ===================================
+docker-compose.yml
+host.json
+.dockerignore
+.funcignore

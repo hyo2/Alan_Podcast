@@ -16,6 +16,8 @@ services:
       - AzureFunctionsJobHost__Logging__Console__IsEnabled=true
       - AzureWebJobsFeatureFlags=EnableWorkerIndexing
       - FUNCTIONS_WORKER_RUNTIME=python
+      - AzureFunctionsJobHost__Logging__LogLevel__Default=Debug
+      - AzureFunctionsJobHost__Logging__LogLevel__Function=Debug
       # UTF-8 인코딩
       - PYTHONIOENCODING=utf-8
       - LANG=C.UTF-8
@@ -30,7 +32,7 @@ services:
       - ./backend/config.py:/home/site/wwwroot/config.py
       - ./backend/host.json:/home/site/wwwroot/host.json
       - ./backend/vertex-ai-service-account.json:/home/site/wwwroot/vertex-ai-service-account.json:ro
-      - ./backend/local.settings.json:/home/site/wwwroot/local.settings.json:ro
+      # - ./backend/local.settings.json:/home/site/wwwroot/local.settings.json:ro
       # 출력 파일 영구 저장
       - ./backend/outputs:/home/site/wwwroot/outputs
     restart: unless-stopped

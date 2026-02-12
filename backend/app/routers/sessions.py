@@ -1,23 +1,30 @@
 # app/routers/sessions.py
 import json
+import os
+import logging
 from typing import Optional, List
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, UploadFile, File, Path, Form, Query, Depends, BackgroundTasks, Response
+from fastapi import APIRouter, UploadFile, File, Path, Form, Query, Depends, Response
 
 from app.dependencies.repos import (
     get_channel_repo,
     get_session_repo,
     get_session_input_repo,
 )
+from app.dependencies.auth import require_access
+
 from app.services.storage_service import get_storage
 from app.services.session_service import SessionService
-from app.services.queue_service import enqueue_session_job
+from app.services.queue_service import enqueue_session_job, enqueue_pipeline_step
 from app.utils.response import success_response, error_response
 from app.utils.error_codes import ErrorCodes
-from app.utils.session_helpers import to_iso_z, unwrap_response_tuple
+from app.utils.session_helpers import to_iso_z, unwrap_response_tuple, normalize_current_step, get_public_progress
 
-router = APIRouter(prefix="/v1", tags=["sessions"])
+# ✅ Logger 초기화
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/v1", tags=["sessions"], dependencies=[Depends(require_access)],)
 
 ALLOWED_EXTS = {".pdf", ".docx", ".pptx", ".txt"}
 
@@ -39,7 +46,7 @@ def _build_storage_prefix(channel_id: str, session_id: str) -> str:
 async def create_session(
     response: Response,
     channel_id: str = Path(..., description="채널 ID"),
-    files: List[UploadFile] = File(None),   # 멀티 파일
+    files: List[UploadFile] = File(None),  # 멀티 파일
     links: str = Form("[]"),               # 멀티 링크(JSON string)
     main_kind: str = Form(...),            # 주 강의자료 형식 ("file" | "link")
     main_index: int = Form(...),           # 주 강의자료 index (0-based index)
@@ -53,6 +60,7 @@ async def create_session(
     session_input_repo=Depends(get_session_input_repo),
     storage=Depends(get_storage),
 ):
+    """세션 생성"""
     # 1) 채널 확인
     ch = channel_repo.get_channel(channel_id)
     if not ch:
@@ -275,13 +283,54 @@ async def create_session(
             current_step="파일 업로드 완료 및 변환 시작",
         ) or session
 
+        # ✅ 9.5) LangSmith Root Run 생성 및 progress.json 초기화
+        try:
+            from langsmith import Client
+            from datetime import datetime
+            import uuid
+            
+            ls_client = Client()
+            
+            # ✅ 올바른 방식 - 직접 run 생성
+            root_run_id = str(uuid.uuid4())
+            
+            ls_client.create_run(
+                name=f"Audiobook: {session_id}",
+                run_type="chain",
+                inputs={
+                    "session_id": session_id,
+                    "channel_id": channel_id,
+                    "options": options,
+                },
+                id=root_run_id,
+                project_name=os.getenv("LANGSMITH_PROJECT", "ai-audiobook-dev"),
+                start_time=datetime.now(),
+            )
+            
+            logger.info(f"✅ LangSmith root run created: {root_run_id}")
+            
+        except Exception as e:
+            logger.warning(f"LangSmith root run 생성 실패: {e}")
+            root_run_id = None
+        
+        # ✅ progress.json 초기화 (root_run_id 포함)
+        progress_key = f"{storage_prefix}pipeline/progress.json"
+        progress_data = {
+            "session_id": session_id,
+            "completed_steps": [],
+            "current_step": "queued",
+            "intermediate_keys": {},
+            "langsmith_root_run_id": root_run_id,
+        }
+        storage.upload_json(progress_key, progress_data)
+
         # 10) Queue 메시지 enqueue (Functions QueueTrigger가 처리)
         try:
-            enqueue_session_job(
+            enqueue_pipeline_step(
                 session_id=session_id,
                 channel_id=channel_id,
+                step="extract_ocr",
                 options=options,
-                kind="generate",
             )
         except Exception as qe:
             # 큐 enqueue 실패하면 세션을 failed로 바꾸고 에러 응답
@@ -308,8 +357,8 @@ async def create_session(
                 data={
                     "session_id": session_id,
                     "status": "processing",
-                    "progress": 0,
-                    "current_step": session.get("current_step") or "파일 업로드 완료 및 변환 시작",
+                    "progress": get_public_progress(session.get("current_step"), status="processing"),
+                    "current_step": normalize_current_step(session.get("current_step"), status="processing"),
                     "created_at": created_at,
                 },
                 status_code=201,
@@ -357,20 +406,10 @@ async def get_session(
                 status_code=404,
             ),
         )
-
-    step_progress = {
-        "start": 0,
-        "파일 업로드 시작": 5,
-        "파일 업로드 완료 및 변환 시작": 10,
-        "extract_complete": 30,
-        "combine_complete": 40,
-        "script_complete": 60,
-        "audio_complete": 80,
-        "merge_complete": 90,
-        "completed": 100,
-        "error": -1,
-    }
-    progress = step_progress.get(session.get("current_step"), 0)
+    
+    raw_step = session.get("current_step")
+    public_step = normalize_current_step(raw_step, status=session.get("status"))
+    progress = get_public_progress(raw_step, status=session.get("status"))
 
     result = None
     error = session.get("error_message")
@@ -401,7 +440,7 @@ async def get_session(
                 "session_id": session_id,
                 "status": session["status"],
                 "progress": progress,
-                "current_step": session.get("current_step") or "",
+                "current_step": public_step,
                 "result": result,
                 "error": error,
                 "created_at": created_at,
@@ -434,22 +473,10 @@ async def list_sessions(
     rows = session_repo.list_sessions_by_channel(channel_id, limit=limit, offset=offset)
     total = len(rows)
 
-    step_progress = {
-        "start": 0,
-        "파일 업로드 시작": 5,
-        "파일 업로드 완료 및 변환 시작": 10,
-        "extract_complete": 30,
-        "combine_complete": 40,
-        "script_complete": 60,
-        "audio_complete": 80,
-        "merge_complete": 90,
-        "completed": 100,
-        "error": -1,
-    }
-
     sessions_list = []
     for s in rows:
-        progress = step_progress.get(s.get("current_step"), 0)
+        raw_step = s.get("current_step")
+        progress = get_public_progress(raw_step, status=s.get("status"))
         sessions_list.append(
             {
                 "session_id": s["session_id"],

@@ -48,6 +48,8 @@ tests/
 .coverage
 htmlcov/
 
+test/
+
 # 기타
 .DS_Store
 Thumbs.db

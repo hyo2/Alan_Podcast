@@ -4,13 +4,13 @@ from fastapi import APIRouter, Path, Depends, Request, Response
 from fastapi.responses import StreamingResponse
 
 from app.dependencies.repos import get_channel_repo, get_session_repo
+from app.dependencies.auth import require_access
 from app.services.storage_service import get_storage
 from app.utils.response import error_response
 from app.utils.error_codes import ErrorCodes
 from app.utils.session_helpers import unwrap_response_tuple
 
-
-router = APIRouter(prefix="/v1/channels/{channel_id}/files", tags=["streaming"])
+router = APIRouter(prefix="/v1/channels/{channel_id}/files", tags=["streaming"], dependencies=[Depends(require_access)],)
 
 _RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 

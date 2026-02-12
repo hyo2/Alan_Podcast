@@ -1,11 +1,40 @@
 """Azure Functions entry point (Python programming model v2)"""
 
-import os
-import json
+import os, json, tempfile, pathlib
 import logging
+import base64
 import azure.functions as func
 
 logger = logging.getLogger(__name__)
+
+def _ensure_vertex_sa_file():
+    target = os.getenv("VERTEX_AI_SERVICE_ACCOUNT_FILE", "/tmp/gcp-sa.json")
+
+    try:
+        # 이미 파일 있으면 그대로 사용
+        if pathlib.Path(target).exists():
+            return target
+
+        sa = os.getenv("VERTEX_AI_SERVICE_ACCOUNT_JSON")
+        if not sa:
+            logger.warning("VERTEX_AI_SERVICE_ACCOUNT_JSON not set. Skipping file creation.")
+            return None
+
+        data = json.loads(sa)
+
+        pathlib.Path(target).parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        return target
+
+    except Exception as e:
+        logger.exception("Failed to ensure Vertex service account file: %s", e)
+        return None
+
+# 절대 여기서 raise하지 않도록 유지
+_ensure_vertex_sa_file()
+
 
 # ========================================
 # 1. FastAPI ASGI Wrapper (HTTP 트리거)
@@ -35,96 +64,8 @@ _QUEUE_NAME = os.getenv("AZURE_STORAGE_QUEUE_NAME", "ai-audiobook-jobs")
 )
 def session_job_worker(msg: func.QueueMessage) -> None:
     """큐에서 세션 처리 작업을 가져와 실행"""
+    
     raw = msg.get_body().decode("utf-8", errors="replace")
     logger.info("[Queue] Received message: %s", raw[:200])
-
-    try:
-        payload = json.loads(raw)
-    except Exception:
-        logger.exception("[Queue] Invalid JSON message")
-        return
-
-    kind = payload.get("kind", "generate")
-    if kind != "generate":
-        logger.warning("[Queue] Unknown kind=%s. skipping", kind)
-        return
-
-    session_id = payload.get("session_id")
-    channel_id = payload.get("channel_id")
-    options = payload.get("options") or {}
-
-    if not session_id or not channel_id:
-        logger.warning("[Queue] Missing session_id/channel_id. payload=%s", payload)
-        return
-
-    logger.info(f"[Queue] Processing session_id={session_id}, channel_id={channel_id}")
-
-    try:
-        from app.dependencies.repos import (
-            get_db,
-            get_channel_repo,
-            get_session_repo,
-            get_session_input_repo,
-        )
-        from app.services.storage_service import get_storage
-        from app.services.session_service import SessionService
-
-        storage = get_storage()
-        backend = os.getenv("REPO_BACKEND", "memory").lower().strip()
-
-        if backend == "postgres":
-            db_gen = get_db()
-            db = next(db_gen)
-            try:
-                channel_repo = get_channel_repo(db=db)
-                session_repo = get_session_repo(db=db)
-                session_input_repo = get_session_input_repo(db=db)
-
-                service = SessionService(
-                    channel_repo=channel_repo,
-                    session_repo=session_repo,
-                    session_input_repo=session_input_repo,
-                    storage=storage,
-                )
-                _run_service(service, session_id, channel_id, options)
-            finally:
-                try:
-                    next(db_gen)
-                except StopIteration:
-                    pass
-        else:
-            channel_repo = get_channel_repo(db=None)
-            session_repo = get_session_repo(db=None)
-            session_input_repo = get_session_input_repo(db=None)
-
-            service = SessionService(
-                channel_repo=channel_repo,
-                session_repo=session_repo,
-                session_input_repo=session_input_repo,
-                storage=storage,
-            )
-            _run_service(service, session_id, channel_id, options)
-
-        logger.info(f"[Queue] ✅ Successfully processed session_id={session_id}")
-
-    except Exception as e:
-        logger.exception(f"[Queue] ❌ Worker failed for session_id={session_id}: {str(e)}")
-
-
-def _run_service(service, session_id: str, channel_id: str, options: dict) -> None:
-    """비동기 함수를 동기 컨텍스트에서 실행"""
-    import asyncio
-    import inspect
-
-    fn = service.process_audiobook_generation
-
-    if inspect.iscoroutinefunction(fn):
-        # 비동기 함수인 경우 asyncio.run으로 실행
-        try:
-            asyncio.run(fn(session_id=session_id, channel_id=channel_id, options=options))
-        except Exception as e:
-            logger.error(f"[Queue] asyncio.run failed: {e}")
-            raise
-    else:
-        # 동기 함수인 경우 바로 실행
-        fn(session_id=session_id, channel_id=channel_id, options=options)
+    from app.services.pipeline_worker import handle_queue_message
+    handle_queue_message(raw)

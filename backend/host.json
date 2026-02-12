@@ -7,10 +7,12 @@
   "logging": {
     "logLevel": {
       "default": "Information",
-      "Host.Results": "Warning",
       "Function": "Information",
+      "Host.Results": "Warning",
       "Host.Aggregator": "Warning",
-      "Azure.Core": "Warning"
+      "Azure.Core": "Warning",
+      "Microsoft.AspNetCore.Routing": "Warning",
+      "Microsoft.Azure.WebJobs.Extensions.Storage": "Warning"
     }
   },
   "extensions": {
@@ -19,7 +21,7 @@
     },
     "queues": {
       "maxPollingInterval": "00:00:02",
-      "visibilityTimeout": "00:05:00",
+      "visibilityTimeout": "00:15:00",
       "batchSize": 1,
       "maxDequeueCount": 3,
       "newBatchThreshold": 0

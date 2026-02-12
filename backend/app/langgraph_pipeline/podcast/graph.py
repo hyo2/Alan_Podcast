@@ -13,6 +13,7 @@ from .metadata_generator_node import MetadataGenerator
 from .script_generator import ScriptGenerator
 from .tts_service import TTSService
 from .audio_processor import AudioProcessor
+from .pricing import format_cost
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,14 @@ def extract_texts_node(state: PodcastState) -> PodcastState:
             output_path=temp_json_path
         )
         
+        # ✅ Text/Vision 토큰 정보 수집
+        text_tokens = {}
+        vision_tokens = {}
+        if isinstance(generated_path, dict):
+            text_tokens = generated_path.get("text_tokens", {})
+            vision_tokens = generated_path.get("vision_tokens", {})
+            generated_path = generated_path.get("metadata_path", generated_path)
+        
         with open(generated_path, 'r', encoding='utf-8') as f:
             source_data = json.load(f)
             
@@ -85,11 +94,19 @@ def extract_texts_node(state: PodcastState) -> PodcastState:
 
         logger.info(f"파싱 완료 - Main: {len(main_texts)}개, Aux: {len(aux_texts)}개")
         
+        # ✅ usage에 text_tokens와 vision_tokens 저장
+        current_usage = state.get("usage", {})
+        if text_tokens:
+            current_usage["text"] = text_tokens
+        if vision_tokens:
+            current_usage["vision"] = vision_tokens
+        
         return {
             **state,
             "source_data": source_data,
             "main_texts": main_texts,
             "aux_texts": aux_texts,
+            "usage": current_usage,
             "errors": [],
             "current_step": "extract_complete"
         }
@@ -179,7 +196,37 @@ def generate_audio_node(state: PodcastState) -> PodcastState:
     try:
         tts = TTSService()
         metadata, files = tts.generate_audio(state['script'], state['host_name'], state['guest_name'])
-        return {**state, "audio_metadata": metadata, "wav_files": files, "current_step": "audio_complete"}
+        
+        # ✅ TTS/STT 통계 정보 추출
+        tts_stats = {}
+        if metadata and len(metadata) > 0 and '_tts_stats' in metadata[0]:
+            tts_stats = metadata[0].pop('_tts_stats')  # metadata에서 제거하고 state에 추가
+            print(f"[DEBUG] TTS/STT stats extracted: {tts_stats}")
+        else:
+            print(f"[DEBUG] No _tts_stats found in metadata")
+            if metadata and len(metadata) > 0:
+                print(f"[DEBUG] metadata[0] keys: {metadata[0].keys()}")
+        
+        tts_chars = tts_stats.get('tts_characters', 0)
+        stt_secs = tts_stats.get('stt_seconds', 0.0)
+        print(f"[DEBUG] tts_characters={tts_chars}, stt_seconds={stt_secs}")
+        
+        # ✅ usage에 TTS/STT 통계 추가
+        current_usage = state.get("usage", {})
+        current_usage["tts_characters"] = tts_chars
+        current_usage["stt_seconds"] = stt_secs
+        
+        new_state = {
+            **state, 
+            "audio_metadata": metadata, 
+            "wav_files": files, 
+            "current_step": "audio_complete",
+            "usage": current_usage  # ✅ 업데이트된 usage
+        }
+        
+        print(f"[DEBUG] Returning state with usage={new_state.get('usage')}")
+        
+        return new_state
     except Exception as e:
         logger.error(f"TTS 오류: {e}")
         return {**state, "errors": state.get('errors', []) + [str(e)], "current_step": "error"}
@@ -205,6 +252,146 @@ def generate_transcript_node(state: PodcastState) -> PodcastState:
     try:
         processor = AudioProcessor()
         path = processor.generate_transcript(state['audio_metadata'], state['final_podcast_path'])
+        
+        # ✅ 최종 토큰 사용량 집계 출력
+        usage = state.get("usage", {})
+        
+        print("\n" + "="*60)
+        print("🎉 팟캐스트 생성 완료!")
+        print("="*60)
+        
+        if usage:
+            from .pricing import calculate_llm_cost, calculate_vision_cost, calculate_text_cost, get_pricing
+            
+            print("\n" + "="*60)
+            print("💰 최종 비용 요약")
+            print("="*60)
+            print("\n📊 항목별 상세:\n")
+            
+            total_cost_usd = 0.0
+            pricing = get_pricing()
+            
+            # ====================================
+            # LLM (스크립트 생성)
+            # ====================================
+            llm_usage = usage.get("script_generation", {})
+            if llm_usage:
+                attempts = llm_usage.get('attempts', 0)
+                attempts_detail = llm_usage.get('attempts_detail', [])
+                total_input = llm_usage.get('input_tokens', 0)
+                total_output = llm_usage.get('output_tokens', 0)
+                
+                print(f"💬 LLM (스크립트 생성) - {attempts}회 시도")
+                
+                # Input 상세
+                if attempts_detail:
+                    input_parts = []
+                    input_costs = []
+                    for detail in attempts_detail:
+                        attempt_num = detail['attempt']
+                        input_tok = detail['input_tokens']
+                        input_parts.append(f"{input_tok:,} ({attempt_num}차)")
+                        input_cost = input_tok * pricing['llm_input']
+                        input_costs.append(f"${input_cost:.4f}")
+                    
+                    print(f"   Input:  " + " + ".join(input_parts) + f" = {total_input:,} tokens")
+                    print(f"          " + "   + ".join(input_costs) + f" = ${sum([d['input_tokens'] * pricing['llm_input'] for d in attempts_detail]):.4f}")
+                    print()
+                    
+                    # Output 상세
+                    output_parts = []
+                    output_costs = []
+                    for detail in attempts_detail:
+                        attempt_num = detail['attempt']
+                        output_tok = detail['output_tokens']
+                        output_parts.append(f"{output_tok:,} ({attempt_num}차)")
+                        output_cost = output_tok * pricing['llm_output']
+                        output_costs.append(f"${output_cost:.4f}")
+                    
+                    print(f"   Output: " + " + ".join(output_parts) + f" = {total_output:,} tokens")
+                    print(f"          " + "   + ".join(output_costs) + f" = ${sum([d['output_tokens'] * pricing['llm_output'] for d in attempts_detail]):.4f}")
+                else:
+                    # attempts_detail 없으면 기존 방식
+                    print(f"   Input:  {total_input:,} tokens (${total_input * pricing['llm_input']:.4f})")
+                    print(f"   Output: {total_output:,} tokens (${total_output * pricing['llm_output']:.4f})")
+                
+                llm_cost = calculate_llm_cost(total_input, total_output)
+                total_cost_usd += llm_cost
+                print(f"\n   소계: {format_cost(llm_cost)}")
+                print()
+            
+            # ====================================
+            # Text (키워드 추출)
+            # ====================================
+            text_usage = usage.get("text", {})
+            if text_usage:
+                keyword_tokens = text_usage.get("keyword_extraction", 0)
+                text_total = text_usage.get("total", 0)
+                text_cost = text_usage.get('cost_usd', 0.0)
+                total_cost_usd += text_cost
+                
+                print(f"📝 Text (키워드 추출)")
+                print(f"   키워드 추출: {keyword_tokens:,} tokens")
+                print(f"\n   소계: {format_cost(text_cost)}")
+                print()
+            
+            # ====================================
+            # Vision (이미지 필터링 + 이미지 설명 생성)
+            # ====================================
+            vision_usage = usage.get("vision", {})
+            if vision_usage:
+                image_tokens = vision_usage.get("image_filtering", 0)
+                description_tokens = vision_usage.get("image_description", 0)
+                vision_total = vision_usage.get("total", 0)
+                vision_cost = vision_usage.get('cost_usd', 0.0)
+                total_cost_usd += vision_cost
+                
+                print(f"👁️  Vision (이미지 처리)")
+                print(f"   이미지 분석:  {image_tokens:,} tokens (${image_tokens * pricing['vision']:.4f})")
+                if description_tokens > 0:
+                    description_count = vision_usage.get("description_count", 0)
+                    print(f"   이미지 설명:  {description_tokens:,} tokens (${description_tokens * pricing['vision']:.4f}) - {description_count}개")
+                print(f"\n   소계: {format_cost(vision_cost)}")
+                print()
+            
+            # ====================================
+            # TTS / STT (usage에서 가져오기)
+            # ====================================
+            tts_chars = usage.get('tts_characters', 0)
+            stt_seconds = usage.get('stt_seconds', 0.0)
+            
+            if tts_chars > 0 or stt_seconds > 0:
+                from .pricing import calculate_tts_cost, calculate_stt_cost
+                
+                if tts_chars > 0:
+                    tts_cost = calculate_tts_cost(tts_chars)
+                    total_cost_usd += tts_cost
+                    print(f"🎙️  TTS (음성 합성)")
+                    print(f"   문자: {tts_chars:,}자")
+                    print(f"\n   소계: {format_cost(tts_cost)}")
+                    print()
+                
+                if stt_seconds > 0:
+                    stt_cost = calculate_stt_cost(stt_seconds)
+                    total_cost_usd += stt_cost
+                    print(f"🎧 STT (음성 인식)")
+                    print(f"   시간: {stt_seconds:.2f}초")
+                    print(f"\n   소계: {format_cost(stt_cost)}")
+                    print()
+            else:
+                print(f"⚠️  TTS/STT 비용 정보가 state에 없습니다.")
+                print(f"   tail_focus_v5_fixed.py의 성능 측정 섹션을 참고하세요.")
+                print()
+            
+            # ====================================
+            # 총합
+            # ====================================
+            print("="*60)
+            print(f"💵 총 비용: {format_cost(total_cost_usd)}")
+            print("="*60)
+            
+        print()
+        
         return {**state, "transcript_path": path, "current_step": "complete"}
     except Exception as e:
         logger.error(f"트랜스크립트 오류: {e}")

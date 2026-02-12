@@ -101,6 +101,28 @@ class AzureBlobStorage:
         except Exception as e:
             logger.error(f"[AzureBlobStorage] delete_prefix failed: prefix={prefix} err={e}")
             raise
+    
+    # 재큐잉을 위해 추가
+    def upload_json(self, storage_key: str, data: dict) -> None:
+        """JSON 데이터를 Blob에 저장"""
+        import json
+        json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
+        self.upload_bytes(storage_key, json_bytes, content_type="application/json")
+
+    def download_json(self, storage_key: str) -> dict:
+        """Blob에서 JSON 데이터 로드"""
+        import json
+        data = self.download(storage_key)
+        return json.loads(data.decode('utf-8'))
+
+    def exists(self, storage_key: str) -> bool:
+        """파일 존재 여부 확인"""
+        try:
+            blob = self._container.get_blob_client(storage_key)
+            blob.get_blob_properties()
+            return True
+        except Exception:
+            return False
 
 
 class LocalStorage:
@@ -156,6 +178,22 @@ class LocalStorage:
             logger.info(f"[LocalStorage] deleted directory: {prefix}")
             return 1
         return 0
+    
+    # LocalStorage 클래스에도 동일하게 추가
+    def upload_json(self, storage_key: str, data: dict) -> None:
+        import json
+        os.makedirs(os.path.dirname(storage_key), exist_ok=True)
+        with open(storage_key, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        logger.info(f"[LocalStorage] uploaded JSON: {storage_key}")
+
+    def download_json(self, storage_key: str) -> dict:
+        import json
+        with open(storage_key, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def exists(self, storage_key: str) -> bool:
+        return os.path.exists(storage_key)
 
 
 def get_storage():

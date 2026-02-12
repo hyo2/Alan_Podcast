@@ -11,6 +11,14 @@ Thumbs.db
 # =========================
 .env
 .env.*
+# 환경별 환경변수 파일 (민감 정보 포함)
+.env.development
+.env.staging
+.env.production
+
+# 예시만 허용
+!.env.example
+
 *.secret
 *.key
 *.pem
@@ -44,6 +52,9 @@ build/
 outputs/
 tmp/
 
+# vertex-ai-service-account.json
+vertex-ai-service-account.json
+
 # =========================
 # Azure / Cloud local artifacts
 # =========================
@@ -60,3 +71,4 @@ local.settings.json
 # Test / scratch
 # =========================
 test/
+ocr_debug_local/
