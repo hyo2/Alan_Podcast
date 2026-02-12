@@ -1,12 +1,12 @@
 # app/services/langgraph_service.py
 import os
 import logging
-from typing import List, Dict, Any, Callable, Optional
+from typing import List, Dict, Any, Callable, Optional, TYPE_CHECKING
 from langsmith import traceable
-from app.langgraph_pipeline.podcast.graph import create_podcast_graph
-from app.langgraph_pipeline.podcast.state import PodcastState
+if TYPE_CHECKING:
+    # 타입체크용(런타임 import 방지)
+    from app.langgraph_pipeline.podcast.state import PodcastState
 
-LANGGRAPH_URL = os.getenv("LANGGRAPH_URL")
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +43,12 @@ async def run_langgraph(
     # thread_id 커스터마이즈 (세션/아웃풋 모두 식별 가능)
     thread_id: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """
+     LangGraph 파이프라인 실행
+     """
+    # ✅ 런타임에만 import (cold start 시 import 부담 제거)
+    from app.langgraph_pipeline.podcast.graph import create_podcast_graph
+
     graph = create_podcast_graph()
 
     initial_state: PodcastState = {

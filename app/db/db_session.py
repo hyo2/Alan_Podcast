@@ -12,7 +12,10 @@ if DATABASE_URL:
 
     engine = create_engine(
         DATABASE_URL,
+        pool_size=3,        # 작게
+        max_overflow=2,     # 여유 2개
         pool_pre_ping=True,
+        pool_recycle=1800,  # 30분
         future=True,
     )
 

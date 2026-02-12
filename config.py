@@ -99,20 +99,30 @@ class Settings:
         우선순위:
           1. .env.{environment} (예: .env.production)
           2. .env (공통)
-        """
-        backend_dir = Path(__file__).parent
-        env_file = backend_dir / f".env.{self.environment}"
         
-        # 환경별 파일이 있으면 로드
-        if env_file.exists():
-            print(f"환경 파일 로드: {env_file}")
-            self._load_dotenv(env_file)
-        else:
-            # 없으면 기본 .env 파일 사용
-            default_env = backend_dir / ".env"
-            if default_env.exists():
-                print(f"기본 환경 파일 로드: {default_env}")
-                self._load_dotenv(default_env)
+        Note: Azure Functions에서는 .env 파일이 배포되지 않으므로
+              모든 환경변수가 App Settings에서 주입됩니다.
+        """
+        try:
+            backend_dir = Path(__file__).parent
+            env_file = backend_dir / f".env.{self.environment}"
+            
+            # 환경별 파일이 있으면 로드
+            if env_file.exists():
+                print(f"환경 파일 로드: {env_file}")
+                self._load_dotenv(env_file)
+            else:
+                # 없으면 기본 .env 파일 사용
+                default_env = backend_dir / ".env"
+                if default_env.exists():
+                    print(f"기본 환경 파일 로드: {default_env}")
+                    self._load_dotenv(default_env)
+                else:
+                    # Azure Functions 등 클라우드 환경에서는 파일이 없을 수 있음
+                    print(f"⚠️ .env 파일 없음 (정상 - App Settings 사용 중)")
+        except Exception as e:
+            # .env 로딩 실패해도 계속 진행 (App Settings가 있으면 됨)
+            print(f"⚠️ .env 파일 로딩 실패 (정상 - App Settings 사용 중): {e}")
     
     def _load_dotenv(self, filepath: Path) -> None:
         """
@@ -166,10 +176,13 @@ class Settings:
         """
         value = os.getenv(key)
         if not value:
-            raise ValueError(
-                f"필수 환경변수 누락: {key}\n"
-                f"   .env.{self.environment} 파일을 확인하세요."
+            error_msg = (
+                f"❌ 필수 환경변수 누락: {key}\n"
+                f"   Environment: {self.environment}\n"
+                f"   Azure Functions App Settings에서 {key}를 확인하세요."
             )
+            print(error_msg)  # stdout에도 출력 (로그 확인용)
+            raise ValueError(error_msg)
         return value
     
     def _get_default_log_level(self) -> str:
