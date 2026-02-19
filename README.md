@@ -54,35 +54,41 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     Client (React + Vite)                    │
-│  ┌─────────────┐  ┌─────────────┐  ┌──────────────────┐    │
-│  │ Mobile UI   │  │ Web UI      │  │ Audio Player     │    │
-│  └─────────────┘  └─────────────┘  └──────────────────┘    │
+│                     Client (Web/Mobile)                      │
 └────────────────────────┬────────────────────────────────────┘
                          │ REST API
 ┌────────────────────────▼────────────────────────────────────┐
-│                  API Gateway (FastAPI)                       │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │ Auth MW      │  │ CORS MW      │  │ Routers      │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────────┐
-│                    Service Layer                             │
+│          Azure Functions (HTTP Trigger) + FastAPI            │
+│  ┌────────────────┐  ┌──────────────┐  ┌────────────────┐  │
+│  │ Internal Auth  │  │  CORS MW     │  │  Alan Auth     │  │
+│  │ Middleware     │  │              │  │  Service       │  │
+│  └────────────────┘  └──────────────┘  └────────────────┘  │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │  SessionService → LangGraphService (6 Nodes)         │   │
-│  │  1. extract_texts → 2. combine_texts                 │   │
-│  │  3. generate_script → 4. generate_audio              │   │
-│  │  5. merge_audio → 6. generate_transcript             │   │
+│  │  Routers: channels / sessions / streaming / health   │   │
 │  └──────────────────────────────────────────────────────┘   │
+└────────────────────────┬────────────────────────────────────┘
+                         │ enqueue
+┌────────────────────────▼────────────────────────────────────┐
+│         Azure Queue Storage → Queue Trigger Worker           │
+│                                                              │
+│  Step 1: extract_ocr      → OCR + Vision (MetadataGenerator) │
+│  Step 2: extract_finalize → 텍스트 구조화                    │
+│  Step 3: script           → Vertex AI Gemini 스크립트 생성   │
+│  Step 4: audio            → Google Cloud TTS 음성 합성       │
+│  Step 5: finalize         → ffmpeg 병합 + 트랜스크립트       │
 └───────┬──────────────────────────┬──────────────────────────┘
         │                          │
 ┌───────▼────────┐        ┌────────▼─────────────────────────┐
-│  PostgreSQL    │        │    External Services             │
-│  - channels    │        │  - Vertex AI (Gemini 2.5 flash)  │
-│  - sessions    │        │  - Google Cloud Speech           │
-│  - inputs      │        │  - Azure Blob Storage            │
-└────────────────┘        └──────────────────────────────────┘
+│  PostgreSQL    │        │    External Services (GCP)        │
+│  - channels    │        │  - Vertex AI (Gemini 2.5 flash)   │
+│  - sessions    │        │  - Google Cloud TTS               │
+│  - inputs      │        │  - Google Cloud Speech            │
+│  - prompt_     │        │                                   │
+│    templates   │        │    Azure Blob Storage             │
+└────────────────┘        │  - input_files/                   │
+                          │  - pipeline/ (중간 결과)           │
+                          │  - output_files/ (최종 결과)       │
+                          └──────────────────────────────────┘
 ```
 
 ---
