@@ -55,11 +55,9 @@ def extract_texts_node(state: PodcastState) -> PodcastState:
             output_path=temp_json_path
         )
         
-        # ✅ Text/Vision 토큰 정보 수집
-        text_tokens = {}
+        # ✅ Vision 토큰 정보 수집
         vision_tokens = {}
         if isinstance(generated_path, dict):
-            text_tokens = generated_path.get("text_tokens", {})
             vision_tokens = generated_path.get("vision_tokens", {})
             generated_path = generated_path.get("metadata_path", generated_path)
         
@@ -94,10 +92,8 @@ def extract_texts_node(state: PodcastState) -> PodcastState:
 
         logger.info(f"파싱 완료 - Main: {len(main_texts)}개, Aux: {len(aux_texts)}개")
         
-        # ✅ usage에 text_tokens와 vision_tokens 저장
+        # ✅ usage에 vision_tokens 저장
         current_usage = state.get("usage", {})
-        if text_tokens:
-            current_usage["text"] = text_tokens
         if vision_tokens:
             current_usage["vision"] = vision_tokens
         
@@ -261,7 +257,7 @@ def generate_transcript_node(state: PodcastState) -> PodcastState:
         print("="*60)
         
         if usage:
-            from .pricing import calculate_llm_cost, calculate_vision_cost, calculate_text_cost, get_pricing
+            from .pricing import calculate_llm_cost, calculate_vision_cost, get_pricing
             
             print("\n" + "="*60)
             print("💰 최종 비용 요약")
@@ -272,7 +268,29 @@ def generate_transcript_node(state: PodcastState) -> PodcastState:
             pricing = get_pricing()
             
             # ====================================
-            # LLM (스크립트 생성)
+            # 1단계: Vision (키워드 추출 + 이미지 필터링)
+            # ====================================
+            vision_usage = usage.get("vision", {})
+            if vision_usage:
+                keyword_tokens = vision_usage.get("keyword_extraction", 0)
+                image_tokens = vision_usage.get("image_filtering", 0)
+                description_tokens = vision_usage.get("image_description", 0)  # ✅ 이미지 설명
+                vision_total = vision_usage.get("total", 0)
+                vision_cost = vision_usage.get('cost_usd', 0.0)
+                total_cost_usd += vision_cost
+                
+                print(f"👁️  Vision (이미지 처리)")
+                print(f"   키워드 추출: {keyword_tokens:,} tokens (${keyword_tokens * pricing['vision']:.4f})")
+                print(f"   이미지 분석:  {image_tokens:,} tokens (${image_tokens * pricing['vision']:.4f})")
+                # ✅ 이미지 설명 생성 토큰 출력
+                if description_tokens > 0:
+                    description_count = vision_usage.get("description_count", 0)
+                    print(f"   이미지 설명:  {description_tokens:,} tokens (${description_tokens * pricing['vision']:.4f}) - {description_count}개")
+                print(f"\n   소계: {format_cost(vision_cost)}")
+                print()
+            
+            # ====================================
+            # 2단계: LLM (스크립트 생성)
             # ====================================
             llm_usage = usage.get("script_generation", {})
             if llm_usage:
@@ -318,40 +336,6 @@ def generate_transcript_node(state: PodcastState) -> PodcastState:
                 llm_cost = calculate_llm_cost(total_input, total_output)
                 total_cost_usd += llm_cost
                 print(f"\n   소계: {format_cost(llm_cost)}")
-                print()
-            
-            # ====================================
-            # Text (키워드 추출)
-            # ====================================
-            text_usage = usage.get("text", {})
-            if text_usage:
-                keyword_tokens = text_usage.get("keyword_extraction", 0)
-                text_total = text_usage.get("total", 0)
-                text_cost = text_usage.get('cost_usd', 0.0)
-                total_cost_usd += text_cost
-                
-                print(f"📝 Text (키워드 추출)")
-                print(f"   키워드 추출: {keyword_tokens:,} tokens")
-                print(f"\n   소계: {format_cost(text_cost)}")
-                print()
-            
-            # ====================================
-            # Vision (이미지 필터링 + 이미지 설명 생성)
-            # ====================================
-            vision_usage = usage.get("vision", {})
-            if vision_usage:
-                image_tokens = vision_usage.get("image_filtering", 0)
-                description_tokens = vision_usage.get("image_description", 0)
-                vision_total = vision_usage.get("total", 0)
-                vision_cost = vision_usage.get('cost_usd', 0.0)
-                total_cost_usd += vision_cost
-                
-                print(f"👁️  Vision (이미지 처리)")
-                print(f"   이미지 분석:  {image_tokens:,} tokens (${image_tokens * pricing['vision']:.4f})")
-                if description_tokens > 0:
-                    description_count = vision_usage.get("description_count", 0)
-                    print(f"   이미지 설명:  {description_tokens:,} tokens (${description_tokens * pricing['vision']:.4f}) - {description_count}개")
-                print(f"\n   소계: {format_cost(vision_cost)}")
                 print()
             
             # ====================================

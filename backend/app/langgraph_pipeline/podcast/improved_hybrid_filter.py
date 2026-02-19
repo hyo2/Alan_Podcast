@@ -935,42 +935,51 @@ class ImprovedHybridFilterPipeline:
         
         self.model = get_global_model()
 
-    def extract_keywords_from_document(self, file_path: str):
-        """문서에서 자동으로 키워드 추출"""
+    def extract_keywords_from_document(self, file_path: str, text: str = None):
+        """문서에서 자동으로 키워드 추출
+        
+        Args:
+            file_path: 문서 경로 (확장자로 처리 방식 결정)
+            text: 이미 추출된 텍스트 (전달 시 파일 파싱 생략 - DOCX 등)
+        """
         if not self.auto_extract:
             return
         
         from pathlib import Path
         
         _log("📚 문서 분석하여 키워드 자동 추출 중...", level="INFO")
-        
-        ext = Path(file_path).suffix.lower()
-        all_text = []
-        
-        if ext == '.pptx':
-            prs = Presentation(file_path)
-            for slide in prs.slides:
-                for shape in slide.shapes:
-                    if hasattr(shape, "text"):
-                        all_text.append(shape.text)
-        
-        elif ext == '.pdf':
-            import pdfplumber  # ✅ pdfplumber 사용
-            try:
-                with pdfplumber.open(file_path) as pdf:
-                    for page in pdf.pages:
-                        text = page.extract_text()
-                        if text:
-                            all_text.append(text)
-            except Exception as e:
-                _log(f"   ⚠️ PDF 텍스트 추출 실패, 범용 패턴만 사용")
-                return
-        
+
+        # ✅ 텍스트가 직접 전달된 경우 파일 파싱 생략 (DOCX 등)
+        if text:
+            full_text = text[:5000]
         else:
-            _log(f"   ⚠️ 지원하지 않는 형식: {ext}")
-            return
-        
-        full_text = "\n".join(all_text)[:5000]
+            ext = Path(file_path).suffix.lower()
+            all_text = []
+            
+            if ext == '.pptx':
+                prs = Presentation(file_path)
+                for slide in prs.slides:
+                    for shape in slide.shapes:
+                        if hasattr(shape, "text"):
+                            all_text.append(shape.text)
+            
+            elif ext == '.pdf':
+                import pdfplumber
+                try:
+                    with pdfplumber.open(file_path) as pdf:
+                        for page in pdf.pages:
+                            page_text = page.extract_text()
+                            if page_text:
+                                all_text.append(page_text)
+                except Exception as e:
+                    _log(f"   ⚠️ PDF 텍스트 추출 실패, 범용 패턴만 사용")
+                    return
+            
+            else:
+                _log(f"   ⚠️ 지원하지 않는 형식: {ext}")
+                return
+            
+            full_text = "\n".join(all_text)[:5000]
         
         prompt = f"""
 다음 강의 자료에서 **핵심 키워드 20개**를 추출하세요.
@@ -995,14 +1004,11 @@ class ImprovedHybridFilterPipeline:
             if hasattr(response, 'usage_metadata'):
                 usage = response.usage_metadata
                 token_count = usage.total_token_count
-                _log(f"   💰 [Text-키워드] Total tokens: {token_count:,}", level="INFO")
+                _log(f"   💰 [Vision-키워드] Total tokens: {token_count:,}", level="INFO")
                 
-                # ✅ text_tokens에 저장 (Text API 사용)
-                if not hasattr(self, 'text_tokens'):
-                    self.text_tokens = {'total': 0}
-                
-                self.text_tokens["keyword_extraction"] = token_count
-                self.text_tokens["total"] += token_count
+                # ✅ vision_tokens에 저장
+                self.vision_tokens["keyword_extraction"] = token_count
+                self.vision_tokens["total"] += token_count
             
             text = response.text.strip()
             
