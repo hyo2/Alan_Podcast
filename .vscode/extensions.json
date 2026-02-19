@@ -1,3 +1,7 @@
 {
-  "recommendations": ["denoland.vscode-deno"]
+  "recommendations": [
+    "ms-azuretools.vscode-azurefunctions",
+    "ms-python.python",
+    "denoland.vscode-deno"
+  ]
 }

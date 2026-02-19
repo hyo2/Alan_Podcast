@@ -129,8 +129,11 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.venv_paddleocr
 env/
 venv/
+venv_paddleocr/
+.venv_paddleocr/
 ENV/
 env.bak/
 venv.bak/
@@ -178,7 +181,6 @@ uv.lock
 
 .langgraph_api/
 
-.vscode/
 
 # vertex-ai-service-account.json
 vertex-ai-service-account.json
