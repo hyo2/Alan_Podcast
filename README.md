@@ -410,11 +410,11 @@ GitHub는 단일 파일 100MB 제한이 있어, `ffmpeg/ffprobe` 바이너리는
 
 3. (로컬 개발/리눅스) 실행 권한이 없으면 권한을 부여합니다.
 
-````bash
+```bash
 chmod +x app/bin/linux-x64/ffmpeg app/bin/linux-x64/ffprobe
+```
 
 > Azure Functions 배포 환경에서는 위 번들 바이너리가 런타임에 /tmp/bin/으로 복사되어 실행됩니다.
-
 
 ### 2. Google Cloud 인증 에러
 
@@ -424,7 +424,7 @@ export VERTEX_AI_SERVICE_ACCOUNT_FILE=/path/to/service-account.json
 
 # Azure 배포: VERTEX_AI_SERVICE_ACCOUNT_JSON 환경변수에 JSON 문자열 설정
 # function_app.py 시작 시 /tmp/gcp-sa.json으로 자동 생성됨
-````
+```
 
 ### 3. PostgreSQL 연결 에러
 
