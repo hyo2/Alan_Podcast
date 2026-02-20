@@ -166,7 +166,7 @@ cd ai-audiobook-generator
 
 #### 2.1. 의존성 설치
 
-````bash
+```bash
 cd backend
 
 # 가상 환경 생성
@@ -175,7 +175,7 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 
 # 패키지 설치
 pip install -r requirements.txt
-
+```
 
 #### 2.2. 환경 변수 설정
 
@@ -425,4 +425,7 @@ func azure functionapp publish <function-app-name>
 - `STORAGE_BACKEND=azure` 및 Azure 연결 문자열 설정
 - `REPO_BACKEND=postgres` 및 `DATABASE_URL` 설정
 - `VERTEX_AI_SERVICE_ACCOUNT_JSON` 환경변수 설정
-````
+
+```
+
+```
