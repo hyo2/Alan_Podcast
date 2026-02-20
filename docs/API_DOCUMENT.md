@@ -76,6 +76,45 @@ X-Internal-Service-Token: <your-token>
 
 ---
 
+### Alan 사용자 인증
+
+내부 서비스 토큰 검증 이후, Alan 사용자 인증이 추가로 수행됩니다.
+
+**요청 헤더**
+
+```
+X-Internal-Service-Token: <your-token>
+Authorization: Bearer <alan-token>
+```
+
+> 쿠키(`alan_session_id` 또는 `alan_guest_token`)로도 Alan 인증 대체 가능
+
+**인증 방법 (우선순위 순)**
+
+1. 쿠키: `alan_session_id`
+2. 쿠키: `alan_guest_token`
+3. 헤더: `Authorization: Bearer <token>`
+
+**인증 실패 시**
+
+- **Status Code**: `401 Unauthorized`
+- **Error Code**: `UNAUTHORIZED`
+- **Message**: "인증 토큰이 누락되었습니다" 또는 "유효하지 않은 인증 토큰입니다"
+
+**인증 서버 오류 시**
+
+- **Status Code**: `502 Bad Gateway`
+- **Message**: "인증 서비스에 연결할 수 없습니다" 또는 "인증 서비스 응답 시간 초과"
+
+**접근 정책 (ACCESS_POLICY)**
+
+| 정책         | 동작                                                                               |
+| ------------ | ---------------------------------------------------------------------------------- |
+| `all` (기본) | 인증만 통과하면 모든 사용자 허용                                                   |
+| `pro_only`   | Pro 역할(`pro_user`, `internal_user`, `pro_user_promotion`)만 허용, 그 외 403 반환 |
+
+> **개발 환경**: `AUTH_MODE=mock` 설정 시 Alan 인증 없이 Pro 사용자로 처리됩니다. 현재 mock 환경 기준으로 검증되었으며, 실제 Alan Auth 연동은 운영 배포 시 확인이 필요합니다.
+
 ---
 
 ## API 엔드포인트 목록
@@ -133,13 +172,15 @@ curl -X GET "http://localhost:4001/v1/health"
 
 ```
 X-Internal-Service-Token: <your-token>
+Authorization: Bearer <alan-token>
 ```
 
 **요청 예시**
 
 ```bash
 curl -X POST "http://localhost:4001/v1/channels" \
-  -H "X-Internal-Service-Token: your-token"
+  -H "X-Internal-Service-Token: your-token" \
+  -H "Authorization: Bearer your-alan-token"
 ```
 
 **응답 예시** (201 Created)
@@ -157,6 +198,7 @@ curl -X POST "http://localhost:4001/v1/channels" \
 
 **에러 응답**
 
+- `401 UNAUTHORIZED`: 인증 실패
 - `500 INTERNAL_ERROR`: 서버 내부 오류
 
 ---
@@ -169,6 +211,7 @@ curl -X POST "http://localhost:4001/v1/channels" \
 
 ```
 X-Internal-Service-Token: <your-token>
+Authorization: Bearer <alan-token>
 ```
 
 **경로 파라미터**
@@ -179,7 +222,8 @@ X-Internal-Service-Token: <your-token>
 
 ```bash
 curl -X DELETE "http://localhost:4001/v1/channels/ch_abc123xyz" \
-  -H "X-Internal-Service-Token: your-token"
+  -H "X-Internal-Service-Token: your-token" \
+  -H "Authorization: Bearer your-alan-token"
 ```
 
 **응답 예시** (200 OK)
@@ -194,6 +238,7 @@ curl -X DELETE "http://localhost:4001/v1/channels/ch_abc123xyz" \
 
 **에러 응답**
 
+- `401 UNAUTHORIZED`: 인증 실패
 - `404 CHANNEL_NOT_FOUND`: 채널을 찾을 수 없음
 - `500 INTERNAL_ERROR`: 서버 내부 오류
 
@@ -211,6 +256,7 @@ curl -X DELETE "http://localhost:4001/v1/channels/ch_abc123xyz" \
 
 ```
 X-Internal-Service-Token: <your-token>
+Authorization: Bearer <alan-token>
 Content-Type: multipart/form-data
 ```
 
@@ -244,6 +290,7 @@ Content-Type: multipart/form-data
 ```bash
 curl -X POST "http://localhost:4001/v1/channels/ch_abc123xyz/sessions" \
   -H "X-Internal-Service-Token: your-token" \
+  -H "Authorization: Bearer your-alan-token" \
   -F "files=@document.pdf" \
   -F "files=@slides.pptx" \
   -F 'links=["https://example.com/article"]' \
@@ -275,6 +322,7 @@ curl -X POST "http://localhost:4001/v1/channels/ch_abc123xyz/sessions" \
 **에러 응답**
 
 - `400 INVALID_FILE_FORMAT`: 잘못된 파일 형식, links 파싱 실패, 입력 개수 초과, main 지정 오류
+- `401 UNAUTHORIZED`: 인증 실패
 - `404 CHANNEL_NOT_FOUND`: 채널을 찾을 수 없음
 - `500 INTERNAL_ERROR`: 서버 내부 오류, 큐 등록 실패
 
@@ -290,6 +338,7 @@ curl -X POST "http://localhost:4001/v1/channels/ch_abc123xyz/sessions" \
 
 ```
 X-Internal-Service-Token: <your-token>
+Authorization: Bearer <alan-token>
 ```
 
 **경로 파라미터**
@@ -301,7 +350,8 @@ X-Internal-Service-Token: <your-token>
 
 ```bash
 curl -X GET "http://localhost:4001/v1/channels/ch_abc123xyz/sessions/sess_xyz789abc" \
-  -H "X-Internal-Service-Token: your-token"
+  -H "X-Internal-Service-Token: your-token" \
+  -H "Authorization: Bearer your-alan-token"
 ```
 
 **응답 예시 - 처리 중** (200 OK)
@@ -384,6 +434,7 @@ curl -X GET "http://localhost:4001/v1/channels/ch_abc123xyz/sessions/sess_xyz789
 
 **에러 응답**
 
+- `401 UNAUTHORIZED`: 인증 실패
 - `404 CHANNEL_NOT_FOUND`: 채널을 찾을 수 없음
 - `404 SESSION_NOT_FOUND`: 세션을 찾을 수 없음
 
@@ -397,6 +448,7 @@ curl -X GET "http://localhost:4001/v1/channels/ch_abc123xyz/sessions/sess_xyz789
 
 ```
 X-Internal-Service-Token: <your-token>
+Authorization: Bearer <alan-token>
 ```
 
 **경로 파라미터**
@@ -412,7 +464,8 @@ X-Internal-Service-Token: <your-token>
 
 ```bash
 curl -X GET "http://localhost:4001/v1/channels/ch_abc123xyz/sessions?limit=20&offset=0" \
-  -H "X-Internal-Service-Token: your-token"
+  -H "X-Internal-Service-Token: your-token" \
+  -H "Authorization: Bearer your-alan-token"
 ```
 
 **응답 예시** (200 OK)
@@ -443,6 +496,7 @@ curl -X GET "http://localhost:4001/v1/channels/ch_abc123xyz/sessions?limit=20&of
 
 **에러 응답**
 
+- `401 UNAUTHORIZED`: 인증 실패
 - `404 CHANNEL_NOT_FOUND`: 채널을 찾을 수 없음
 
 ---
@@ -455,6 +509,7 @@ curl -X GET "http://localhost:4001/v1/channels/ch_abc123xyz/sessions?limit=20&of
 
 ```
 X-Internal-Service-Token: <your-token>
+Authorization: Bearer <alan-token>
 ```
 
 **경로 파라미터**
@@ -466,7 +521,8 @@ X-Internal-Service-Token: <your-token>
 
 ```bash
 curl -X DELETE "http://localhost:4001/v1/channels/ch_abc123xyz/sessions/sess_xyz789abc" \
-  -H "X-Internal-Service-Token: your-token"
+  -H "X-Internal-Service-Token: your-token" \
+  -H "Authorization: Bearer your-alan-token"
 ```
 
 **응답 예시** (200 OK)
@@ -481,6 +537,7 @@ curl -X DELETE "http://localhost:4001/v1/channels/ch_abc123xyz/sessions/sess_xyz
 
 **에러 응답**
 
+- `401 UNAUTHORIZED`: 인증 실패
 - `404 CHANNEL_NOT_FOUND`: 채널을 찾을 수 없음
 - `404 SESSION_NOT_FOUND`: 세션을 찾을 수 없음
 - `500 INTERNAL_ERROR`: 서버 내부 오류
@@ -497,6 +554,7 @@ curl -X DELETE "http://localhost:4001/v1/channels/ch_abc123xyz/sessions/sess_xyz
 
 ```
 X-Internal-Service-Token: <your-token>
+Authorization: Bearer <alan-token>
 Range: bytes=0-1023  (선택사항)
 ```
 
@@ -515,6 +573,7 @@ Range: bytes=0-1023  (선택사항)
 ```bash
 curl -X GET "http://localhost:4001/v1/channels/ch_abc123xyz/files/audio/sess_xyz789abc/1" \
   -H "X-Internal-Service-Token: your-token" \
+  -H "Authorization: Bearer your-alan-token" \
   --output audio.mp3
 ```
 
@@ -523,6 +582,7 @@ Range 요청:
 ```bash
 curl -X GET "http://localhost:4001/v1/channels/ch_abc123xyz/files/audio/sess_xyz789abc/1" \
   -H "X-Internal-Service-Token: your-token" \
+  -H "Authorization: Bearer your-alan-token" \
   -H "Range: bytes=0-1023" \
   --output audio_chunk.mp3
 ```
@@ -547,6 +607,7 @@ Accept-Ranges: bytes
 **에러 응답**
 
 - `400 PROCESSING_FAILED`: 처리가 완료되지 않음 (status != `"completed"`)
+- `401 UNAUTHORIZED`: 인증 실패
 - `404 NOT_FOUND`: 챕터를 찾을 수 없음 (현재 chapter=1만 지원)
 - `404 CHANNEL_NOT_FOUND`: 채널을 찾을 수 없음
 - `404 SESSION_NOT_FOUND`: 세션을 찾을 수 없음
@@ -563,6 +624,12 @@ Accept-Ranges: bytes
 ---
 
 ## 변경 이력
+
+### v1.1.0 (2025-02-20)
+
+- Alan 사용자 인증 섹션 추가
+- 전 엔드포인트 요청 헤더에 `Authorization: Bearer` 추가
+- 전 엔드포인트 에러 응답에 `401 UNAUTHORIZED` 추가
 
 ### v1.0.0 (2025-02-03)
 

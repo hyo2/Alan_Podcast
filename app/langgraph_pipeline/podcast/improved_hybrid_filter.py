@@ -347,16 +347,15 @@ class UniversalImageExtractor:
         
         # ===== 2. 텍스트 부족 → OCR 실행 =====
         try:
-            from paddleocr import PaddleOCR
-            import numpy as np
+            import pytesseract
+            from PIL import Image
             from pypdfium2 import PdfDocument
 
-            if not hasattr(self, '_ocr_engine'):
-                os.environ['FLAGS_log_level'] = '3'
-                os.environ['PPOCR_SHOW_LOG'] = 'False'
-
-                _log(f"      → PaddleOCR 초기화 중...")
-                self._ocr_engine = PaddleOCR(lang='korean', use_angle_cls=True)
+            if not hasattr(self, '_tesseract_initialized'):
+                _log(f"      → Tesseract OCR 초기화 중...")
+                # Tesseract 설정 (한글 지원)
+                self._tesseract_config = '--oem 3 --psm 6 -l kor+eng'
+                self._tesseract_initialized = True
 
             # ✅ pypdfium2로 해당 페이지만 렌더링 (0-indexed page_num)
             pdf = PdfDocument(pdf_path)
@@ -369,34 +368,21 @@ class UniversalImageExtractor:
             bitmap = page.render(scale=scale)
             pil_img = bitmap.to_pil()
 
-            img_array = self._normalize_ocr_image(pil_img)
+            # Grayscale 변환 (정확도 향상 + 메모리 절약)
+            if pil_img.mode != 'L':
+                pil_img = pil_img.convert('L')
 
-            # ===== OCR 실행 (안정화 버전) =====
-            result = None
-
-            # 페이지 OCR에서는 cls=True 금지
+            # ===== OCR 실행 =====
             try:
-                result = self._ocr_engine.ocr(img_array)
-            except Exception as e1:
-                _log(f"      ⚠️ ocr() 실패, predict() 시도: {e1}")
-                try:
-                    if hasattr(self._ocr_engine, "predict"):
-                        result = self._ocr_engine.predict(img_array)
-                except Exception as e2:
-                    _log(f"      ❌ OCR 완전 실패: {e2}")
-                    return text
-
-            parsed = self._safe_parse_paddleocr_result(result)
-
-            if parsed:
-                lines = [p["text"] for p in parsed]
-                ocr_result = "\n".join(lines)
+                ocr_result = pytesseract.image_to_string(pil_img, config=self._tesseract_config)
                 _log(f"      → OCR 완료: {text_length}자 → {len(ocr_result)}자")
-                return ocr_result if ocr_result else text
-
+                return ocr_result if ocr_result.strip() else text
+            except Exception as e:
+                _log(f"      ❌ OCR 실패: {e}")
+                return text
 
         except ImportError as e:
-            _log(f"      → PaddleOCR/pypdfium2 미설치, 텍스트만 사용: {e}")
+            _log(f"      → Tesseract/pypdfium2 미설치, 텍스트만 사용: {e}")
             return text
         except Exception as e:
             _log(f"      ⚠️  OCR 실패: {e}")
@@ -438,14 +424,14 @@ class UniversalImageExtractor:
         
         # ===== 2. 텍스트 레이어 없음 → OCR로 bbox 추출 =====
         try:
-            from paddleocr import PaddleOCR
-            import numpy as np
+            import pytesseract
+            from PIL import Image
             from pypdfium2 import PdfDocument
 
-            if not hasattr(self, '_ocr_engine'):
-                os.environ['FLAGS_log_level'] = '3'
-                os.environ['PPOCR_SHOW_LOG'] = 'False'
-                self._ocr_engine = PaddleOCR(lang='korean', use_angle_cls=True)
+            if not hasattr(self, '_tesseract_initialized'):
+                _log(f"      → Tesseract OCR 초기화 중...")
+                self._tesseract_config = '--oem 3 --psm 6 -l kor+eng'
+                self._tesseract_initialized = True
 
             # ✅ pypdfium2로 해당 페이지 렌더링
             pdf = PdfDocument(pdf_path)
@@ -458,44 +444,35 @@ class UniversalImageExtractor:
             bitmap = page.render(scale=scale)
             pil_img = bitmap.to_pil()
 
-            img_array = self._normalize_ocr_image(pil_img)
+            # Grayscale 변환
+            if pil_img.mode != 'L':
+                pil_img = pil_img.convert('L')
 
-            # ===== OCR 실행 (버전별 대응) =====
-            result = None
-
+            # ===== OCR 실행 (bbox 포함) =====
             try:
-                result = self._ocr_engine.ocr(img_array)
-            except Exception as e1:
-                _log(f"      ⚠️ bbox OCR ocr() 실패, predict() 시도: {e1}")
-                try:
-                    if hasattr(self._ocr_engine, "predict"):
-                        result = self._ocr_engine.predict(img_array)
-                except Exception as e2:
-                    _log(f"      ❌ bbox OCR 완전 실패: {e2}")
-                    return []
-
-            parsed = self._safe_parse_paddleocr_result(result)
-
-            for item in parsed:
-                bbox_points = item["bbox"]
-                if not bbox_points:
-                    continue
-
-                try:
-                    x_coords = [p[0] for p in bbox_points if len(p) == 2]
-                    y_coords = [p[1] for p in bbox_points if len(p) == 2]
-
-                    if not x_coords or not y_coords:
+                # Tesseract로 bbox 데이터 추출
+                ocr_data = pytesseract.image_to_data(pil_img, config=self._tesseract_config, output_type=pytesseract.Output.DICT)
+                
+                for i in range(len(ocr_data['text'])):
+                    text = ocr_data['text'][i].strip()
+                    if not text:
                         continue
-
+                    
+                    x = ocr_data['left'][i]
+                    y = ocr_data['top'][i]
+                    w = ocr_data['width'][i]
+                    h = ocr_data['height'][i]
+                    
                     text_bboxes.append({
-                        'x0': min(x_coords),
-                        'top': min(y_coords),
-                        'x1': max(x_coords),
-                        'bottom': max(y_coords)
+                        'x0': x,
+                        'top': y,
+                        'x1': x + w,
+                        'bottom': y + h
                     })
-                except Exception:
-                    continue
+
+            except Exception as e:
+                _log(f"      ❌ bbox OCR 실패: {e}")
+                return []
 
             if text_bboxes:
                 _log(f"      → OCR로 {len(text_bboxes)}개 텍스트 bbox 추출")
@@ -503,7 +480,7 @@ class UniversalImageExtractor:
             return text_bboxes
 
         except ImportError as e:
-            _log(f"      ⚠️  OCR bbox 추출 불가(PaddleOCR/pypdfium2 미설치): {e}")
+            _log(f"      ⚠️  OCR bbox 추출 불가(Tesseract/pypdfium2 미설치): {e}")
             return []
         except Exception as e:
             _log(f"      ⚠️  텍스트 bbox 추출 실패: {e}")

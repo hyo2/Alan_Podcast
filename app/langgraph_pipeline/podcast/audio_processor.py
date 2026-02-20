@@ -5,6 +5,7 @@ import subprocess
 import logging
 from typing import List, Dict, Any
 from pathlib import Path
+from app.utils.binary_helper import get_ffmpeg_path
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ class AudioProcessor:
                 
                 # WAV → MP3 단순 변환
                 command = [
-                    "ffmpeg", "-i", single_wav,
+                    get_ffmpeg_path(), "-i", single_wav,
                     "-c:a", "libmp3lame", "-b:a", "192k", "-y", final_filename
                 ]
                 
@@ -95,7 +96,7 @@ class AudioProcessor:
                 
                 # FFmpeg 실행
                 command = [
-                    "ffmpeg", "-f", "concat", "-safe", "0", "-i", list_file_path,
+                    get_ffmpeg_path(), "-f", "concat", "-safe", "0", "-i", list_file_path,
                     "-c:a", "libmp3lame", "-b:a", "192k", "-y", final_filename
                 ]
                 
