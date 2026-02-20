@@ -1,24 +1,12 @@
 """
-Metadata Generator Node (V2 - pdfplumber 전환)
-===============================================
+Metadata Generator Node (V3 - ONNX Recognition + Gemini Fallback)
+=================================================================
 
 변경사항:
-- PyMuPDF 완전 제거
-- pdfplumber + OCR (pypdfium2 + PaddleOCR)로 통합
-- improved_hybrid_filter.py V3와 완전 호환
-
-입력:
-- primary_file: 주강의자료 (1개, 필수)
-- supplementary_files: 보조자료 (0~3개, 선택)
-
-출력:
-- metadata.json (이미지 설명 포함)
-
-통합:
-- DocumentConverterNode: PDF 변환 + TXT/URL 처리
-- ImprovedHybridFilterPipeline: 이미지 필터링
-- TextExtractor: 페이지별 텍스트 추출
-- ImageDescriptionGenerator: 이미지 상세 설명
+- EasyOCR/PaddleOCR 완전 제거 (메모리 OOM 해결)
+- ONNX Runtime 기반의 초경량 Recognition 아키텍처 도입
+- 텍스트 라인 검출(Heuristic Crop) -> ONNX 추론
+- 모델 부재 시 Gemini Vision으로 자동 Fallback
 
 """
 
@@ -26,88 +14,27 @@ import os
 import json
 import tempfile
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
-from pathlib import Path
 import traceback
-import cv2
 import io
-import numpy as np
 import logging
 import sys
+import math
 
-logger = logging.getLogger(__name__)
+# ✅ 경량화된 라이브러리 임포트
+import cv2
+import numpy as np
+from PIL import Image
 
-def _log(*args, level: str | None = None, exc_info: bool = False, end: str = '\n', flush: bool = False) -> None:
-    """
-    logger 기반 로그 (환경별 LOG_LEVEL 적용).
-    - 기본 level: DEBUG
-    - end/flush를 쓰는 진행형 출력(end != '\\n' 또는 flush=True)은 기존처럼 print 유지
-      (로깅으로 바꾸면 줄바꿈/버퍼링 동작이 달라질 수 있음)
-    """
-    msg = " ".join(str(a) for a in args).rstrip() if args else ""
-
-    # 진행형 출력은 그대로 stdout로 (기존 UX 유지)
-    if end != "\n" or flush:
-        print(msg, end=end, flush=flush)
-        return
-
-    lvl = (level or "DEBUG").upper()
-    if lvl == "DEBUG":
-        logger.debug(msg, exc_info=exc_info)
-    elif lvl == "INFO":
-        logger.info(msg, exc_info=exc_info)
-    elif lvl in ("WARN", "WARNING"):
-        logger.warning(msg, exc_info=exc_info)
-    elif lvl == "ERROR":
-        logger.error(msg, exc_info=exc_info)
-    elif lvl in ("CRITICAL", "FATAL"):
-        logger.critical(msg, exc_info=exc_info)
-    else:
-        logger.debug(msg, exc_info=exc_info)
-
-# OCR 로그 억제
-os.environ['FLAGS_log_level'] = '3'
-os.environ['PPOCR_SHOW_LOG'] = 'False'
-
-# pdfplumber (필수)
 try:
     import pdfplumber
     PDFPLUMBER_AVAILABLE = True
 except ImportError:
-    _log("❌ pdfplumber가 설치되지 않았습니다.", level="ERROR")
-    _log("   pip install pdfplumber", level="ERROR")
     PDFPLUMBER_AVAILABLE = False
 
-# OCR 라이브러리 (선택) - pypdfium2 사용
-OCR_AVAILABLE = False
-ocr_engine = None
-
-try:
-    from paddleocr import PaddleOCR
-    import numpy as np
-    from pypdfium2 import PdfDocument
-    from PIL import Image
-
-    # 여기까지 성공하면 "의존성"은 OK
-    try:
-        ocr_engine = PaddleOCR(
-            lang='korean',
-            use_angle_cls=True
-        )
-        OCR_AVAILABLE = True
-        _log("✅ OCR 엔진 초기화 완료 (PaddleOCR + pypdfium2)", level="INFO")
-    except Exception as e:
-        # 엔진 초기화 실패는 의존성 문제와 분리해서 표시
-        _log(f"⚠️  OCR 엔진 초기화 실패(엔진): {e}", level="WARNING")
-
-except ImportError as e:
-    # 의존성 import 실패만 여기로 옴
-    _log(f"⚠️  OCR 의존성 미설치(선택): {e}", level="WARNING")
-
-
-# 기존 노드 임포트
-from .document_converter_node import DocumentConverterNode, DocumentType
+# 기존 모듈 임포트
+from .document_converter_node import DocumentConverterNode
 from .improved_hybrid_filter import (
     ImprovedHybridFilterPipeline,
     UniversalImageExtractor,
@@ -115,351 +42,216 @@ from .improved_hybrid_filter import (
     get_global_model,
     gemini_ocr_image_bytes
 )
-
 from vertexai.generative_models import Part
+from pypdfium2 import PdfDocument
 
+logger = logging.getLogger(__name__)
+
+def _log(*args, level: str | None = None, exc_info: bool = False, end: str = '\n', flush: bool = False) -> None:
+    msg = " ".join(str(a) for a in args).rstrip() if args else ""
+    if end != "\n" or flush:
+        print(msg, end=end, flush=flush)
+        return
+    lvl = (level or "DEBUG").upper()
+    if lvl == "INFO": logger.info(msg, exc_info=exc_info)
+    elif lvl in ("WARN", "WARNING"): logger.warning(msg, exc_info=exc_info)
+    elif lvl == "ERROR": logger.error(msg, exc_info=exc_info)
+    else: logger.debug(msg, exc_info=exc_info)
+
+# ==========================================
+# 🔧 RapidOCR Wrapper
+# ==========================================
+_rapid_ocr_engine = None
+
+def get_rapid_ocr():
+    global _rapid_ocr_engine
+    if _rapid_ocr_engine is not None:
+        return _rapid_ocr_engine
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+        base_dir = Path(__file__).parent.parent.parent / "ocr_model"
+        det_path = base_dir / "det.onnx"
+        rec_path = base_dir / "rec.onnx"
+        dict_path = base_dir / "dict.txt"
+
+        if not det_path.exists() or not rec_path.exists():
+            _log(f"⚠️ OCR 모델 파일 없음 ({base_dir}) -> Gemini Fallback", level="WARNING")
+            return None
+
+        _rapid_ocr_engine = RapidOCR(
+            det_model_path=str(det_path),
+            rec_model_path=str(rec_path),
+            rec_keys_path=str(dict_path),
+        )
+        _log("✅ RapidOCR 초기화 완료", level="INFO")
+        return _rapid_ocr_engine
+    except Exception as e:
+        _log(f"⚠️ RapidOCR 초기화 실패: {e}", level="WARNING")
+        return None
+
+# ==========================================
+# 🔧 Main Class
+# ==========================================
 class TextExtractor:
     """
     PDF에서 페이지별 텍스트 추출 + 마커 삽입
-    V2: pdfplumber + OCR 통합
+    V3: pdfplumber + ONNX(Recognition) + Gemini Fallback
     """
 
     def __init__(self):
         if not PDFPLUMBER_AVAILABLE:
             raise ImportError("pdfplumber가 필요합니다")
 
-        self.ocr_enabled = OCR_AVAILABLE
+        self.ocr_enabled = True
         self.min_text_length = 100
-        self._ocr_engine = None
-
-        # OCR 결과가 비어있을 때 Gemini(Vision)로 보조 OCR 시도 (비용/지연 주의)
-        self.gemini_ocr_fallback = os.getenv('GEMINI_OCR_FALLBACK', 'false').lower() in ('1','true','yes','y')
-        
-        # ✅ V3: 샘플링 페이지 수 설정 (기본: 15)
-        self.gemini_ocr_max_sample_pages = int(os.getenv('GEMINI_OCR_MAX_SAMPLE_PAGES', '15'))
-        
-        # ✅ V3: 샘플링 통계
+        self.gemini_ocr_fallback = os.getenv('GEMINI_OCR_FALLBACK', 'true').lower() in ('1','true','yes','y')
+        self.gemini_ocr_max_sample_pages = int(os.getenv('GEMINI_OCR_MAX_SAMPLE_PAGES', '10'))
         self._gemini_ocr_used_pages = 0
         self._gemini_ocr_skipped_pages = 0
 
-    def _safe_parse_ocr_result(self, result):
+        # RapidOCR 초기화 시도
+        self._ocr = get_rapid_ocr()
+
+    def _perform_ocr_on_page(self, pdf_path: str, page_number: int) -> Tuple[str, Optional[Image.Image]]:
         """
-        PaddleOCR 결과를 안전하게 파싱
-        다양한 결과 포맷 대응
-        
-        Args:
-            result: PaddleOCR 결과 (다양한 형태 가능)
-        
-        Returns:
-            List[str]: 추출된 텍스트 리스트
+        페이지에 OCR 수행
+        전략: ONNX (1순위) -> 실패/결과부족 -> Gemini (2순위)
         """
-        texts = []
-        
-        # None 체크
-        if not result:
-            return texts
-        
-        # result가 list인지 확인
-        if not isinstance(result, list):
-            return texts
-        
-        # result[0] 추출 (PaddleOCR는 보통 [[...]] 형태)
-        try:
-            items = result[0] if result and isinstance(result[0], list) else result
-        except (IndexError, TypeError):
-            return texts
-        
-        # 각 item 파싱
-        for item in items:
-            try:
-                # Case 1: [[bbox], ("text", score)] 형태
-                if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    # item[1]이 tuple/list인지 확인
-                    if isinstance(item[1], (list, tuple)) and len(item[1]) > 0:
-                        text = str(item[1][0]).strip()
-                        if text and len(text) > 1:  # 1글자 잡음 제거
-                            texts.append(text)
-                    # item[1]이 string인 경우
-                    elif isinstance(item[1], str):
-                        text = item[1].strip()
-                        if text and len(text) > 1:
-                            texts.append(text)
-                
-                # Case 2: {"text": "...", "score": ...} 형태 (dict)
-                elif isinstance(item, dict):
-                    text = item.get("text", "").strip()
-                    if text and len(text) > 1:
-                        texts.append(text)
-                
-                # Case 3: 단순 string (드물지만 대응)
-                elif isinstance(item, str):
-                    text = item.strip()
-                    if text and len(text) > 1:
-                        texts.append(text)
-                        
-            except Exception as e:
-                # 개별 item 파싱 실패는 무시하고 계속
-                _log(f"⚠️ OCR 결과 파싱 스킵: {e}", level="DEBUG")
-                continue
-        
-        return texts
-    
-    def _perform_ocr_on_page(self, pdf_path: str, page_number: int):
-        """
-        페이지에 OCR 수행 (pypdfium2 + PaddleOCR)
-        """
+        pil_img = None
         try:
             pdf = PdfDocument(pdf_path)
             page = pdf[page_number - 1]
-
-            # 1. PDF → 이미지
-            bitmap = page.render(scale=3.0)  # 스케일 올림
+            bitmap = page.render(scale=2.0)
             pil_img = bitmap.to_pil()
 
-            # 2. OCR 엔진 초기화
-            if self._ocr_engine is None:
-                self._ocr_engine = PaddleOCR(
-                    lang="korean",
-                    use_angle_cls=True,
-                    det_db_thresh=0.1,  # 낮춤 (더 많은 텍스트 감지)
-                    det_db_box_thresh=0.3  # 낮춤
-                )
+            max_dim = 1024
+            if max(pil_img.size) > max_dim:
+                pil_img.thumbnail((max_dim, max_dim), Image.LANCZOS)
 
-            # 3. 강화된 전처리
+            if self._ocr is None:
+                return "", pil_img
+
+            import numpy as np
             img_np = np.array(pil_img)
-            
-            # RGB 변환
-            if img_np.ndim == 2:
-                img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2RGB)
-            elif img_np.ndim == 3 and img_np.shape[2] == 4:
-                img_np = cv2.cvtColor(img_np, cv2.COLOR_RGBA2RGB)
+            result, elapsed = self._ocr(img_np)
 
-            # Grayscale
-            gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-            
-            # Gaussian Blur (노이즈 제거)
-            blur = cv2.GaussianBlur(gray, (3, 3), 0)
-            
-            # Otsu Threshold (자동 이진화)
-            _, binary = cv2.threshold(
-                blur, 0, 255,
-                cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
-            )
-            
-            # Morphology Close (잡음 제거)
-            kernel = np.ones((2, 2), np.uint8)
-            cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-            
-            # Sharpen (선명도 향상)
-            kernel_sharp = np.array([[-1,-1,-1],
-                                    [-1, 9,-1],
-                                    [-1,-1,-1]])
-            sharpened = cv2.filter2D(cleaned, -1, kernel_sharp)
-            
-            # RGB 변환
-            final_img = cv2.cvtColor(sharpened, cv2.COLOR_GRAY2RGB)
+            if not result:
+                _log(f"⚠️ RapidOCR 결과 없음 (page {page_number})", level="WARNING")
+                return "", pil_img
 
-            # 4. OCR 실행
-            result = self._ocr_engine.ocr(final_img)
-
-            # 5. 결과 파싱
-            texts = self._safe_parse_ocr_result(result)
-
-            return "\n".join(texts), pil_img
+            texts = [line[1] for line in result if line[1] and line[1].strip()]
+            extracted_text = "\n".join(texts)
+            _log(f"🧩 RapidOCR 결과: {len(extracted_text)}자 (page {page_number})", level="DEBUG")
+            return extracted_text, pil_img
 
         except Exception as e:
-            _log(f"❌ OCR 렌더 실패 (page {page_number}): {e}", level="ERROR", exc_info=True)
-            return "", None
-        
+            _log(f"❌ OCR 처리 중 오류 (page {page_number}): {e}", level="ERROR")
+            return "", pil_img
+
     def _calculate_sample_pages(self, total_pages: int, max_samples: int) -> List[int]:
-        """
-        전체 내용을 커버하도록 페이지 샘플링
-        
-        전략:
-        - 앞부분 (도입/목차): 6페이지
-        - 뒷부분 (요약/과제): 6페이지
-        - 중간부분 (본론): 균등 간격 샘플링
-        
-        Args:
-            total_pages: 전체 페이지 수
-            max_samples: 최대 샘플 페이지 수
-            
-        Returns:
-            샘플링할 페이지 번호 리스트 (1-based)
-        """
-        if total_pages <= max_samples:
-            # 전체 페이지가 샘플 수보다 적으면 전체 처리
-            return list(range(1, total_pages + 1))
-        
-        # 앞/뒤 각 6페이지
+        # (기존 코드 유지)
+        if total_pages <= max_samples: return list(range(1, total_pages + 1))
         head_count = min(6, total_pages)
         tail_count = min(6, total_pages)
-        
         head_pages = list(range(1, head_count + 1))
         tail_pages = list(range(max(total_pages - tail_count + 1, head_count + 1), total_pages + 1))
-        
-        # 중간 샘플 페이지 수 계산
         mid_count = max_samples - len(head_pages) - len(tail_pages)
-        
         if mid_count > 0:
-            # 중간 영역 범위
             mid_start = head_count + 1
             mid_end = total_pages - tail_count
-            
             if mid_end > mid_start:
-                # 균등 간격으로 샘플링
                 step = (mid_end - mid_start + 1) / (mid_count + 1)
-                mid_pages = [
-                    int(mid_start + step * (i + 1))
-                    for i in range(mid_count)
-                ]
-                # 중복 제거
+                mid_pages = [int(mid_start + step * (i + 1)) for i in range(mid_count)]
                 mid_pages = [p for p in mid_pages if p not in head_pages and p not in tail_pages]
-            else:
-                mid_pages = []
-        else:
-            mid_pages = []
-        
-        # 정렬 및 중복 제거
-        all_pages = sorted(set(head_pages + mid_pages + tail_pages))
-        
-        _log(f"   📊 샘플링 전략: 전체 {total_pages}페이지 → {len(all_pages)}페이지 선택", level="INFO")
-        _log(f"      - 앞부분: {head_pages}", level="DEBUG")
-        if mid_pages:
-            _log(f"      - 중간부분: {mid_pages}", level="DEBUG")
-        _log(f"      - 뒷부분: {tail_pages}", level="DEBUG")
-        
-        return all_pages
+            else: mid_pages = []
+        else: mid_pages = []
+        return sorted(set(head_pages + mid_pages + tail_pages))
 
-        
     def _save_debug_image(self, image, pdf_path: str, page_number: int):
-        if image is None:
-            return
+        if image is None: return
+        try:
+            pdf_name = Path(pdf_path).stem
+            debug_dir = Path("/tmp/ocr_debug") / pdf_name
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            image.save(debug_dir / f"page_{page_number:03d}.png")
+        except: pass
 
-        pdf_name = Path(pdf_path).stem
-        debug_dir = Path("/tmp/ocr_debug") / pdf_name
-        debug_dir.mkdir(parents=True, exist_ok=True)
-
-        out_path = debug_dir / f"page_{page_number:03d}.png"
-        image.save(out_path)
-
-        _log(f"🧪 OCR DEBUG 이미지 저장: {out_path}", level="DEBUG")
-
-    def extract_with_markers(self, pdf_path: str, prefix: str = "MAIN"): 
+    def extract_with_markers(self, pdf_path: str, prefix: str = "MAIN"):
         """
-            PDF에서 페이지별 텍스트 추출 + 마커 삽입
-            pdfplumber 사용, 텍스트 부족 시 OCR 자동 수행
-            
-            V3 변경사항:
-            - Gemini OCR Fallback 시 샘플링 적용
-            - PaddleOCR 성공 시에는 기존대로 전체 페이지 처리
-            ...
+        메인 추출 로직
         """
         pages_text = []
         total_pages = 0
         ocr_count = 0
         
-        # ✅ V3: Gemini 샘플링 관련 카운터 초기화
+        # 통계 초기화
         self._gemini_ocr_used_pages = 0
         self._gemini_ocr_skipped_pages = 0
-        
-        # ✅ V3: 1단계 - 전체 페이지 수 확인 후 샘플 페이지 결정
+
+        # 1. 페이지 샘플링 계산
         sample_pages = None
-        with pdfplumber.open(pdf_path) as pdf:
-            total_pages = len(pdf.pages)
-            
-            # ✅ V3: Gemini Fallback이 활성화되어 있으면 샘플 페이지 미리 계산
-            if self.gemini_ocr_fallback:
-                sample_pages = self._calculate_sample_pages(
-                    total_pages, 
-                    self.gemini_ocr_max_sample_pages
-                )
-                _log(f"   🎯 Gemini OCR Fallback 샘플링 활성화: {len(sample_pages)}/{total_pages} 페이지", level="INFO")
-        
-        # ✅ V3: 2단계 - 페이지별 처리
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                total_pages = len(pdf.pages)
+                if self.gemini_ocr_fallback:
+                    sample_pages = self._calculate_sample_pages(total_pages, self.gemini_ocr_max_sample_pages)
+                    _log(f"🎯 Gemini 샘플링: {len(sample_pages)}/{total_pages} 페이지", level="INFO")
+        except Exception as e:
+            _log(f"❌ PDF 열기 실패: {e}", level="ERROR")
+            return {"full_text": "", "total_pages": 0, "gemini_fallback_used": False}
+
+        # 2. 페이지별 순회
         with pdfplumber.open(pdf_path) as pdf:
             for page_idx, page in enumerate(pdf.pages, start=1):
+                # A. 텍스트 레이어 추출 (가장 빠르고 정확, 0원)
                 text = page.extract_text() or ""
                 text_length = len(text.strip())
 
-                _log(
-                     f"      page={page_idx} text_len={text_length} ocr_enabled={self.ocr_enabled}",
-                     level="DEBUG"
-                 )
-
-                if text_length < self.min_text_length and self.ocr_enabled:
-                    _log(f"      → 페이지 {page_idx}: OCR 수행", level="INFO")
-
+                # B. 텍스트가 부족하면 이미지 OCR 시도
+                if text_length < self.min_text_length:
+                    _log(f"page={page_idx} 텍스트 부족({text_length}자) -> 이미지 OCR 시도", level="DEBUG")
+                    
+                    # (1) ONNX OCR 시도 + 이미지 렌더링
                     ocr_text, pil_img = self._perform_ocr_on_page(pdf_path, page_idx)
+                    
+                    # 디버그 이미지 저장
+                    self._save_debug_image(pil_img, pdf_path, page_idx)
 
-                    # 🔥 OCR 결과와 무관하게 이미지 저장
-                    self._save_debug_image(
-                        pil_img, pdf_path, page_idx
-                    )
-
-                    if ocr_text:
+                    if ocr_text and len(ocr_text) > 50:
                         text = ocr_text
                         ocr_count += 1
-                        _log(f"         ✅ OCR 완료 ({len(ocr_text)}자)", level="INFO")
-                    # ✅ V3: PaddleOCR 실패 → Gemini Fallback (샘플링 적용)
-                    else:
-                        _log(f"         ⚠️ PaddleOCR 결과 없음", level="WARNING")
-
-                        # Gemini Fallback 활성화 + 이미지 있음
-                        if self.gemini_ocr_fallback and pil_img is not None:
-                            # ✅ V3: 샘플 페이지인지 확인
-                            if sample_pages and page_idx in sample_pages:
-                                try:
-                                    buf = io.BytesIO()
-                                    pil_img.save(buf, format="PNG")
-                                    gem_text, usage = gemini_ocr_image_bytes(
-                                            buf.getvalue(),
-                                            language_hint="ko",
-                                        )
-                                    self._gemini_ocr_used_pages += 1
-
-                                    if gem_text and gem_text.strip():
-                                        text = gem_text
-                                        ocr_count += 1
-                                        _log(
-                                            f"         ✅ Gemini OCR fallback 성공 ({len(gem_text)}자) "
-                                            f"tokens={usage.get('total_tokens','?')}",
-                                            level="INFO",
-                                        )
-                                    else:
-                                        _log("         ⚠️ Gemini OCR fallback도 결과 없음", level="WARNING")
-
-                                except Exception as e:
-                                        _log(f"         ⚠️ Gemini OCR fallback 실패: {e}", level="WARNING")
-                            else:
-                                # ✅ V3: 샘플 페이지가 아니면 스킵
-                                self._gemini_ocr_skipped_pages += 1
-                                _log(
-                                    f"         ⏭️  Gemini OCR 샘플링 범위 외 (스킵: {self._gemini_ocr_skipped_pages}페이지)",
-                                    level="DEBUG"
+                        _log(f"✅ ONNX OCR 성공 ({len(text)}자)", level="INFO")
+                    
+                    # (2) ONNX 실패 시 Gemini Fallback
+                    elif self.gemini_ocr_fallback and pil_img is not None:
+                        if sample_pages and page_idx in sample_pages:
+                            try:
+                                buf = io.BytesIO()
+                                pil_img.save(buf, format="PNG")
+                                gem_text, usage = gemini_ocr_image_bytes(
+                                    buf.getvalue(),
+                                    language_hint="ko",
                                 )
+                                self._gemini_ocr_used_pages += 1
+                                if gem_text and gem_text.strip():
+                                    text = gem_text
+                                    ocr_count += 1
+                                    _log(f"✅ Gemini Vision 성공 ({len(text)}자)", level="INFO")
+                                else:
+                                    _log("⚠️ Gemini 결과 없음", level="WARNING")
+                            except Exception as e:
+                                _log(f"⚠️ Gemini 호출 실패: {e}", level="WARNING")
+                        else:
+                            self._gemini_ocr_skipped_pages += 1
 
-                # 페이지 마커 및 텍스트 추가
-                title = (
-                    text.split("\n")[0][:50]
-                    if text.strip()
-                    else f"Page {page_idx}"
-                )
-
+                # 결과 저장
+                title = text.split("\n")[0][:50] if text.strip() else f"Page {page_idx}"
                 pages_text.append(f"[{prefix}-PAGE {page_idx}: {title}]")
                 pages_text.append(text)
                 pages_text.append("")
 
         if ocr_count:
-            _log(f"   ✅ OCR 처리 완료: {ocr_count} 페이지", level="INFO")
-        
-        # ✅ V3: Gemini 샘플링 통계 출력
-        if self.gemini_ocr_fallback and self._gemini_ocr_used_pages > 0:
-            _log(
-                f"   💰 Gemini OCR Fallback 사용: {self._gemini_ocr_used_pages}페이지 "
-                f"(스킵: {self._gemini_ocr_skipped_pages}페이지)",
-                level="INFO"
-            )
+            _log(f"✅ 총 OCR 처리 페이지: {ocr_count}", level="INFO")
 
         return {
             "full_text": "\n".join(pages_text),

@@ -1,6 +1,6 @@
 import os
 import logging
-
+from app.utils.binary_helper import prepare_ffmpeg_binaries
 from app.services.langsmith_tracing import _get_root_run_id, _trace_with_parent
 
 logger = logging.getLogger(__name__)
@@ -495,8 +495,30 @@ def run_finalize_step(session_id, channel_id, options, storage, session_repo):
         script_out_key = f"{output_dir}script/{os.path.basename(transcript_path)}"
         storage.upload_bytes(script_out_key, script_bytes, content_type="text/plain")
         
+
         # 오디오 길이 계산
         from pydub import AudioSegment
+        from pathlib import Path
+
+        ffmpeg_path, ffprobe_path = prepare_ffmpeg_binaries()
+
+        # pydub이 ffmpeg는 converter로 사용
+        AudioSegment.converter = ffmpeg_path
+
+        # ffprobe는 PATH에서 찾는 경우가 많아서 /tmp/bin을 PATH에 추가
+        tmp_bin = str(Path(ffprobe_path).parent)  # "/tmp/bin"
+        os.environ["PATH"] = tmp_bin + ":" + os.environ.get("PATH", "")
+
+        # (있으면) pydub에 ffprobe 경로도 직접 지정
+        try:
+            AudioSegment.ffprobe = ffprobe_path
+        except Exception:
+            pass
+
+        # (보조) env도 같이 넣어두면 다른 코드 경로에도 안전
+        os.environ["FFMPEG_BINARY"] = ffmpeg_path
+        os.environ["FFPROBE_BINARY"] = ffprobe_path
+
         audio = AudioSegment.from_file(final_audio_path)
         total_duration_sec = int(len(audio) / 1000)
         

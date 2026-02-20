@@ -6,7 +6,9 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg)](https://www.typescriptlang.org/)
 [![React](https://img.shields.io/badge/React-19.2-61dafb.svg)](https://reactjs.org/)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776ab.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-latest-009688.svg)](https://fastapi.tiangolo.com/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.121.2-009688.svg)](https://fastapi.tiangolo.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-1.0.4-orange.svg)](https://github.com/langchain-ai/langgraph)
+[![Azure Functions](https://img.shields.io/badge/Azure_Functions-1.24.0-0062ad.svg)](https://azure.microsoft.com/en-us/products/functions)
 
 ---
 
@@ -81,7 +83,7 @@
 ┌───────▼────────┐        ┌────────▼─────────────────────────┐
 │  PostgreSQL    │        │    External Services (GCP)        │
 │  - channels    │        │  - Vertex AI (Gemini 2.5 flash)   │
-│  - sessions    │        │  - Google Cloud TTS               │
+│  - sessions    │        │  - Vertex AI Gemini TTS           │
 │  - inputs      │        │  - Google Cloud Speech            │
 │  - prompt_     │        │                                   │
 │    templates   │        │    Azure Blob Storage             │
@@ -109,17 +111,27 @@
 
 ### Backend
 
-| 구분          | 기술                   | 버전              | 비고                      |
-| ------------- | ---------------------- | ----------------- | ------------------------- |
-| 런타임        | Python                 | 3.11+             | 비동기 처리 지원          |
-| 프레임워크    | FastAPI                | latest            | REST API                  |
-| 데이터베이스  | PostgreSQL             | 14+               | 관계형 DB                 |
-| ORM           | SQLAlchemy             | 2.x               | 데이터베이스 추상화       |
-| AI - LLM      | Vertex AI (Gemini)     | 2.5 flash         | 스크립트 생성             |
-| AI - TTS      | Vertex AI (Gemini TTS) | 2.5-flash-preview | 음성 생성                 |
-| AI 워크플로우 | LangGraph              | latest            | 파이프라인 오케스트레이션 |
-| 파일 저장소   | Azure Blob Storage     | SDK 12.x          | 클라우드 스토리지         |
-| 오디오 처리   | FFmpeg                 | 4.x+              | 변환 및 병합              |
+| 구분              | 기술                                              | 버전                           | 비고                      |
+| ----------------- | ------------------------------------------------- | ------------------------------ | ------------------------- |
+| 런타임            | Python                                            | 3.11+                          | 비동기 처리 지원          |
+| 프레임워크        | FastAPI                                           | 0.121.2                        | REST API, 자동 문서화     |
+| Functions 호스팅  | Azure Functions                                   | 1.24.0                         | HTTP + Queue Trigger      |
+| 데이터베이스      | PostgreSQL                                        | 14+                            | 관계형 DB                 |
+| ORM               | SQLAlchemy                                        | 2.0.46                         | 데이터베이스 추상화       |
+| AI - LLM          | Vertex AI (Gemini)                                | google-genai 1.52.0            | 스크립트 생성             |
+| AI - TTS          | Vertex AI (Gemini TTS) (Gemini 2.5-flash-preview) | google-cloud-aiplatform 1.75.0 | 음성 합성                 |
+| AI - Vision       | Vertex AI Vision                                  | google-cloud-aiplatform 1.75.0 | 이미지 설명 생성          |
+| AI 워크플로우     | LangGraph                                         | 1.0.4                          | 파이프라인 오케스트레이션 |
+| AI 모니터링       | LangSmith                                         | 0.6.6                          | 파이프라인 트레이싱       |
+| 파일 저장소       | Azure Blob Storage SDK                            | 12.28.0                        | 클라우드 스토리지         |
+| 작업 큐           | Azure Queue Storage SDK                           | 12.15.0                        | 단계별 비동기 처리        |
+| OCR               | rapidocr-onnxruntime                              | 1.4.4                          | 문자 인식 (한글/영어)     |
+| 오디오 처리       | ffmpeg                                            | 수동 설치 (linux-x64)          | WAV→MP3 변환/병합         |
+| 오디오 라이브러리 | pydub                                             | 0.25.1+                        | 오디오 길이 측정          |
+| PDF 처리          | pdfplumber                                        | 0.11.4                         | 텍스트 추출               |
+| HTTP 클라이언트   | httpx                                             | 0.28.1                         | Alan Auth 서버 호출       |
+
+> Azure 배포 환경에서는 **LGPL 빌드(ffmpeg/ffprobe)** 를 사용하며, GitHub 파일 제한으로 인해 바이너리는 저장소에 포함되지 않습니다. (backend README 참고)
 
 ---
 
@@ -129,15 +141,15 @@
 
 **공통**
 
-- Node.js 18+
+### 필수 요구사항
+
 - Python 3.11+
-- FFmpeg 4.x+
 - PostgreSQL 14+
-
-**외부 서비스**
-
 - Google Cloud 프로젝트 (Vertex AI, Cloud TTS 활성화)
-- Azure Storage 계정 (또는 로컬 스토리지 사용)
+- Azure Storage 계정 (Blob + Queue) 또는 로컬 스토리지
+
+> **ffmpeg**: GitHub 단일 파일 100MB 제한으로 바이너리는 저장소에 포함되지 않습니다.  
+> Azure Functions 배포 시 `backend/app/bin/linux-x64/` 경로에 **직접 다운로드한 ffmpeg/ffprobe** 를 배치해야 합니다. (자세한 방법: `backend/README.md`)
 
 ---
 
@@ -171,51 +183,36 @@ pip install -r requirements.txt
 
 ```bash
 # ===== 환경 구분 =====
-ENVIRONMENT=development
+ENVIRONMENT=development       # development | staging | production
 
 # ===== 내부 서비스 인증 =====
 INTERNAL_SERVICE_TOKEN=your-secret-token-here
 
-# ===== 서버 설정 =====
-PORT=4001
-LOG_LEVEL=INFO
+# ===== Alan 사용자 인증 =====
+AUTH_MODE=mock                # mock (개발) | real (운영)
+ALAN_AUTH_BASE_URL=           # AUTH_MODE=real 일 때 필수
+ACCESS_POLICY=all             # all | pro_only
 
-# ===== CORS 설정 =====
-# development: 빈 값 (코드에서 * 사용)
-# staging/production: 허용할 origin (콤마 구분)
-CORS_ORIGINS=
+# ===== Database =====
+DATABASE_URL=postgresql://user:password@localhost:5432/audiobook
+REPO_BACKEND=postgres         # postgres | memory
 
-# ===== Vertex AI (Google Cloud) =====
-VERTEX_AI_PROJECT_ID=your-project-id
-VERTEX_AI_REGION=us-central1
-VERTEX_AI_SERVICE_ACCOUNT_FILE=path/to/service-account.json
-VERTEX_AI_MODEL_TEXT=gemini-2.5-flash
-
-# ===== 데이터베이스 =====
-# PostgreSQL 연결
-DATABASE_URL=postgresql://user:password@host:5432/database
-# 저장소 백엔드 - memory/postgres
-REPO_BACKEND=postgres
-
-# ===== 스토리지 =====
-# Azure Blob Storage
-AZURE_STORAGE_CONNECTION_STRING=your-connection-string
-AZURE_STORAGE_CONTAINER=alan-files
-
-# Azure Storage Queue
-AZURE_STORAGE_QUEUE_NAME=ai-audiobook-jobs
-FUNCTIONS_WORKER_RUNTIME=python
-AzureWebJobsStorage=your-connection-string
-
-# 스토리지 백엔드 - azure/local
-STORAGE_BACKEND=azure
-
-# 출력 디렉토리 (로컬 모드)
+# ===== Storage =====
+STORAGE_BACKEND=local         # local | azure
 BASE_OUTPUT_DIR=./outputs
+# AZURE_STORAGE_CONNECTION_STRING=...
+# AZURE_STORAGE_CONTAINER=ai-audiobook
 
-# 프론트엔드 URL
-FRONTEND_URL=http://localhost:5173
-````
+# ===== Azure Queue =====
+# AZURE_STORAGE_QUEUE_NAME=ai-audiobook-jobs
+# AzureWebJobsStorage=<connection-string>
+
+# ===== Google Cloud =====
+VERTEX_AI_PROJECT_ID=your-project-id
+VERTEX_AI_REGION=asia-northeast3
+VERTEX_AI_SERVICE_ACCOUNT_FILE=/tmp/gcp-sa.json
+VERTEX_AI_SERVICE_ACCOUNT_JSON={"type":"service_account",...}
+```
 
 #### 2.3. 데이터베이스 초기화
 
@@ -230,9 +227,11 @@ python -c "from app.db.models import Base; from app.db.db_session import engine;
 #### 2.4. 백엔드 실행
 
 ```bash
-# 개발 모드
+# 로컬 개발 서버 (HTTP만)
 uvicorn app.main:app --reload --host 0.0.0.0 --port 4001
 
+# Azure Functions 로컬 실행 (HTTP + Queue Trigger)
+func start
 ```
 
 서버 실행 후:
@@ -314,15 +313,23 @@ ai-audiobook-generator/
 │   │   │   ├── langgraph_service.py
 │   │   │   └── storage_service.py
 │   │   ├── repositories/         # 데이터 액세스
+│   │   │   ├── interfaces/
 │   │   │   ├── postgres/
 │   │   │   └── memory/
 │   │   ├── langgraph_pipeline/   # AI 워크플로우
-│   │   │   └── podcast/
-│   │   │       ├── graph.py
-│   │   │       ├── state.py
-│   │   │       ├── script_generator.py
-│   │   │       ├── tts_service.py
-│   │   │       └── audio_processor.py
+│   │   │      └── podcast/
+│   │   │          ├── graph.py          # LangGraph 노드 정의
+│   │   │          ├── state.py
+│   │   │          ├── document_converter_node.py  # 문서 변환
+│   │   │          ├── metadata_generator_node.py  # OCR + Vision
+│   │   │          ├── improved_hybrid_filter.py  # 이미지 필터링
+│   │   │          ├── prompt_service.py # Prompt 템플릿 서비스
+│   │   │          ├── script/           # 스크립트 노드 사용 모듈
+│   │   │          ├── script_generator.py
+│   │   │          ├── tail_focus_v5_fixed.py
+│   │   │          ├── tts_service.py
+│   │   │          ├── audio_processor.py
+│   │   │          └── pricing.py
 │   │   ├── middleware/           # 미들웨어
 │   │   ├── db/                   # 데이터베이스
 │   │   └── main.py              # 앱 진입점
@@ -336,9 +343,16 @@ ai-audiobook-generator/
 
 ## 📚 API 문서
 
-### 주요 엔드포인트
+모든 요청(헬스체크 제외)에는 두 가지 인증이 필요합니다.
 
-#### 채널 관리
+```bash
+X-Internal-Service-Token: your-token
+Authorization: Bearer <alan-token>   # 또는 alan_session_id 쿠키
+```
+
+> 개발 환경(`AUTH_MODE=mock`)에서는 Alan 인증 없이 동작합니다.
+
+### 주요 엔드포인트
 
 ```bash
 # 채널 생성
@@ -347,100 +361,68 @@ Response: { channel_id, created_at }
 
 # 채널 삭제
 DELETE /v1/channels/{channel_id}
-```
 
-#### 세션 관리
-
-```bash
-# 세션 생성
+# 세션 생성 (파일 업로드 + 오디오북 생성 시작)
 POST /v1/channels/{channel_id}/sessions
-Body: {
-  "options": {
-    "host1": "TTS 목소리명",
-    "host2": "",
-    "style": "explain",      # explain | lecture
-    "duration": 5,           # 5분 | 10분 | 15분
-    "difficulty": "intermediate"  # basic | intermediate | advanced
-  }
-}
+Body: multipart/form-data
+  - files: File[] (pdf/docx/pptx/txt, 최대 4개)
+  - links: JSON string array (URL 목록)
+  - main_kind: "file" | "link"
+  - main_index: int (0-based)
+  - voice_id: string (default: "Fenrir")
+  - style: "explain" | "lecture"
+  - duration: int (분, default: 5)
+  - difficulty: "basic" | "intermediate" | "advanced"
+  - user_prompt: string
 
-# 세션 조회
+# 세션 조회 (폴링)
 GET /v1/channels/{channel_id}/sessions/{session_id}
+
+# 세션 목록
+GET /v1/channels/{channel_id}/sessions
 
 # 세션 삭제
 DELETE /v1/channels/{channel_id}/sessions/{session_id}
-```
 
-#### 파일 업로드
-
-```bash
-# 파일 업로드
-POST /v1/channels/{channel_id}/sessions/{session_id}/inputs
-Body: multipart/form-data
-  - file: 파일
-  - role: main | aux
-```
-
-#### 오디오 스트리밍
-
-```bash
 # 오디오 스트리밍
 GET /v1/channels/{channel_id}/files/audio/{session_id}/1
-
-# Range 헤더 지원
-Header: Range: bytes=0-1023
-Response: 206 Partial Content
+Header: Range: bytes=0-1023  (선택, 206 Partial Content 응답)
 ```
 
-자세한 API 문서: http://localhost:4001/docs (Swagger UI)
-
-## 🔧 개발 가이드
-
-### 코드 스타일
-
-**Frontend**
-
-```bash
-# 린트 검사
-npm run lint
-
-# 타입 체크
-npm run build
-```
-
-**Backend**
-
-```bash
-# 코드 포맷팅
-black app/
-
-# 타입 체크
-mypy app/
-```
-
-### 테스트
-
-```bash
-# Backend
-pytest tests/
-
-# Frontend
-npm test
-```
+자세한 API 문서: http://localhost:4001/docs
 
 ---
 
-## 🐛 트러블슈팅
+## 📦 번들 리소스 및 설치 안내
 
-### FFmpeg 관련 에러
+Azure Functions 배포 환경 재현성을 위해 일부 리소스가 `backend/` 디렉토리에 포함되어 있습니다.
+
+- **OCR 모델 파일**
+  - 위치: `backend/ocr_model/`
+  - 출처: https://huggingface.co/monkt/paddleocr-onnx/tree/main
+
+- **FFmpeg (ffmpeg/ffprobe)**
+  - 위치(배치 경로): `backend/app/bin/linux-x64/`
+  - 출처: https://github.com/BtbN/FFmpeg-Builds/releases/tag/latest
+  - 안내: GitHub 파일 제한(단일 100MB)으로 바이너리는 저장소에 포함되지 않으며, 수동 설치가 필요합니다.
+
+자세한 설치/라이선스 및 동작 방식은 `backend/README.md`를 참고하세요.
+
+---
+
+## 🚢 배포 환경
+
+**배포 명령**
 
 ```bash
-# 설치 확인
-ffmpeg -version
-
-# Ubuntu/Debian
-sudo apt-get install ffmpeg
-
-# macOS
-brew install ffmpeg
+func azure functionapp publish <function-app-name>
 ```
+
+**운영 환경 체크리스트**
+
+- `AUTH_MODE=real` 및 `ALAN_AUTH_BASE_URL` 설정
+- `ACCESS_POLICY=pro_only` 설정 (Pro 전용 기능 활성화 시)
+- `STORAGE_BACKEND=azure` 및 Azure 연결 문자열 설정
+- `REPO_BACKEND=postgres` 및 `DATABASE_URL` 설정
+- `VERTEX_AI_SERVICE_ACCOUNT_JSON` 환경변수 설정
+````

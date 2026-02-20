@@ -52,14 +52,35 @@ Client
 
 ### LangGraph Pipeline (6 노드)
 
-| 노드                  | 설명                                                         |
-| --------------------- | ------------------------------------------------------------ |
-| `extract_texts`       | OCR(PaddleOCR) + Vision 이미지 설명 생성 (MetadataGenerator) |
-| `combine_texts`       | 텍스트 구조화 및 결합                                        |
-| `generate_script`     | Vertex AI Gemini 스크립트 생성 (DB 프롬프트 템플릿 사용)     |
-| `generate_audio`      | Vertex AI Gemini TTS 음성 합성 (Tail Focus V5)               |
-| `merge_audio`         | ffmpeg 번들 바이너리로 WAV→MP3 변환/병합                     |
-| `generate_transcript` | 타임스탬프 스크립트 생성                                     |
+| 노드                  | 설명                                                                          |
+| --------------------- | ----------------------------------------------------------------------------- |
+| `extract_texts`       | OCR(RapidOCR) + Gemini Vision fallback + 이미지 설명 생성 (MetadataGenerator) |
+| `combine_texts`       | 텍스트 구조화 및 결합                                                         |
+| `generate_script`     | Vertex AI Gemini 스크립트 생성 (DB 프롬프트 템플릿 사용)                      |
+| `generate_audio`      | Vertex AI Gemini TTS 음성 합성 (Tail Focus V5)                                |
+| `merge_audio`         | ffmpeg 번들 바이너리로 WAV→MP3 변환/병합                                      |
+| `generate_transcript` | 타임스탬프 스크립트 생성                                                      |
+
+## 📦 번들 리소스(바이너리/모델) 및 라이선스 안내
+
+본 저장소는 **Azure Functions Zip Deploy 환경에서의 재현성**을 위해 일부 바이너리/모델 파일을 함께 포함합니다.
+
+### 1) FFmpeg 번들 바이너리 (Azure 배포용)
+
+- **포함 위치**: `bin/linux-x64/ffmpeg`, `bin/linux-x64/ffprobe`
+- **사용 목적**: 오디오 변환/병합 (WAV → MP3 등)
+- **동작 방식**: Azure 배포 환경에서 `bin/linux-x64/*`를 런타임에 `/tmp/bin/`으로 복사 후 실행합니다. (읽기 전용 파일시스템/권한 이슈 대응)
+- **다운로드 출처**: `https://github.com/BtbN/FFmpeg-Builds/releases/tag/latest`
+- **버전/빌드 식별**: `ffmpeg-n7.1-latest-linux64-lgpl-7.1`
+
+> ⚠️ 주의: FFmpeg는 빌드/배포본에 따라 LGPL/GPL 구성이 달라질 수 있습니다.  
+> 본 프로젝트는 `<LGPL build 사용>`을 전제로 합니다.
+
+### 2) OCR 모델 파일
+
+- **포함 위치**: `ocr_model/`
+- **사용 목적**: OCR 엔진에서 사용하는 모델/리소스 파일
+- **다운로드 출처**: `https://huggingface.co/monkt/paddleocr-onnx/tree/main`
 
 ## 🚀 빠른 시작
 
@@ -191,7 +212,7 @@ curl -X POST http://localhost:4001/v1/channels \
   "success": true,
   "data": {
     "channel_id": "ch_abc123",
-    "created_at": "2024-01-30T12:00:00Z"
+    "created_at": "2026-01-30T12:00:00Z"
   }
 }
 ```
@@ -225,7 +246,7 @@ curl -X POST http://localhost:4001/v1/channels/ch_abc123/sessions \
     "status": "processing",
     "progress": 10,
     "current_step": "파일 업로드 완료 및 변환 시작",
-    "created_at": "2024-01-30T12:00:00Z"
+    "created_at": "2026-01-30T12:00:00Z"
   }
 }
 ```
@@ -298,14 +319,20 @@ backend/
 │   │   ├── auth.py               # require_access, require_pro_user
 │   │   └── repos.py              # Repository 팩토리
 │   ├── repositories/             # 데이터 액세스
+│   │   ├── interfaces/
 │   │   ├── postgres/
 │   │   └── memory/
 │   ├── langgraph_pipeline/       # AI 워크플로우
 │   │   └── podcast/
 │   │       ├── graph.py          # LangGraph 노드 정의
 │   │       ├── state.py
+│   │       ├── document_converter_node.py  # 문서 변환
 │   │       ├── metadata_generator_node.py  # OCR + Vision
+│   │       ├── improved_hybrid_filter.py  # 이미지 필터링
+│   │       ├── prompt_service.py # Prompt 템플릿 서비스
+│   │       ├── script/           # 스크립트 노드 사용 모듈
 │   │       ├── script_generator.py
+│   │       ├── tail_focus_v5_fixed.py
 │   │       ├── tts_service.py
 │   │       ├── audio_processor.py
 │   │       └── pricing.py
@@ -314,9 +341,11 @@ backend/
 │   │   └── internal_auth.py
 │   ├── utils/
 │   │   ├── binary_helper.py      # ffmpeg/ffprobe 번들 바이너리 관리
-│   │   └── ...
+│   │   ├── error_codes.py
+│   │   ├── logging_helper.py
+│   │   ├── response.py
+│   │   └── session_helpers.py
 │   ├── db/                       # 데이터베이스
-│   │   ├── models.py
 │   │   └── db_session.py
 │   └── main.py                  # 앱 진입점
 ├── bin/
@@ -366,7 +395,26 @@ sudo apt-get install ffmpeg
 brew install ffmpeg
 ```
 
-> Azure Functions 배포 환경에서는 `app/bin/linux-x64/ffmpeg` 번들 바이너리가 `/tmp/bin/`으로 자동 복사되어 실행됩니다. 별도 설치 불필요.
+### FFmpeg 번들 바이너리 설치 (GitHub 용량 제한으로 수동 설치 필요)
+
+GitHub는 단일 파일 100MB 제한이 있어, `ffmpeg/ffprobe` 바이너리는 저장소에 포함하지 않습니다.
+
+1. 아래 링크에서 **LGPL 빌드**를 다운로드합니다.
+
+- 다운로드: https://github.com/BtbN/FFmpeg-Builds/releases/tag/latest
+- 파일 예시: `ffmpeg-n7.1-latest-linux64-lgpl-7.1.tar.xz`
+
+2. 압축 해제 후 `ffmpeg`, `ffprobe` 파일을 아래 경로에 복사합니다.
+
+- 복사 위치: `app/bin/linux-x64/ffmpeg`, `app/bin/linux-x64/ffprobe`
+
+3. (로컬 개발/리눅스) 실행 권한이 없으면 권한을 부여합니다.
+
+```bash
+chmod +x app/bin/linux-x64/ffmpeg app/bin/linux-x64/ffprobe
+```
+
+> Azure Functions 배포 환경에서는 위 번들 바이너리가 런타임에 /tmp/bin/으로 복사되어 실행됩니다.
 
 ### 2. Google Cloud 인증 에러
 

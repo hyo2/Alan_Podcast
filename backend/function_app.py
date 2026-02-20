@@ -60,7 +60,7 @@ _QUEUE_NAME = os.getenv("AZURE_STORAGE_QUEUE_NAME", "ai-audiobook-jobs")
 @app.queue_trigger(
     arg_name="msg",
     queue_name=_QUEUE_NAME,
-    connection="AzureWebJobsStorage",
+    connection="AZURE_STORAGE_CONNECTION_STRING",
 )
 def session_job_worker(msg: func.QueueMessage) -> None:
     """큐에서 세션 처리 작업을 가져와 실행"""
